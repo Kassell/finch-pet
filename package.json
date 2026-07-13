@@ -10,8 +10,7 @@
   "homepage": "https://finchwork.app",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/finchtoys/finch-releases.git",
-    "directory": "extensions/finch-pet"
+    "url": "git+https://github.com/Kassell/finch-pet.git"
   },
   "license": "MIT",
   "main": "dist/index.js",
