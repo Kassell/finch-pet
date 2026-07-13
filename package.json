@@ -1,0 +1,101 @@
+{
+  "name": "finch-pet",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Desktop pet for Finch.",
+  "author": {
+    "name": "Finch Team",
+    "url": "https://finchwork.app"
+  },
+  "homepage": "https://finchwork.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/finchtoys/finch-releases.git",
+    "directory": "extensions/finch-pet"
+  },
+  "license": "MIT",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npm run build:canvas",
+    "build:canvas": "tsc -p tsconfig.canvas.json && esbuild canvas/main.ts --bundle --format=iife --charset=utf8 --outfile=pet-canvas.js --banner:js=\"/* 本文件由 canvas/ 目录源码构建生成,请勿直接编辑;运行 npm run build:canvas 重新生成。 */\"",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "finch": {
+    "manifestVersion": 1,
+    "id": "finch-pet",
+    "name": "Finch Pet",
+    "description": "Desktop pet for Finch.",
+    "systemPrompt": "This extension provides a desktop pet. Use pet_show/pet_hide to show or hide it, pet_list/pet_select to manage pets, pet_add to import a local folder, local zip, local image, remote image URL, or Petdex page URL; imported spritesheets are parsed as a fixed 8 columns × 9 rows grid and may be higher resolution than the 192×208 base frame size. Use pet_remove to remove custom pets, pet_set_state to set state, and pet_say for a short message.",
+    "toolMeta": {
+      "name": "Finch Pet"
+    },
+    "promptGuides": [
+      {
+        "id": "show-pet",
+        "title": "Show pet",
+        "description": "Show the current pet",
+        "prompt": "Show the pet"
+      },
+      {
+        "id": "list-pets",
+        "title": "List pets",
+        "description": "List available pets",
+        "prompt": "List available pets"
+      }
+    ],
+    "main": "dist/index.js",
+    "activationEvents": [
+      "onStartup"
+    ],
+    "contributes": {
+      "tools": true,
+      "skills": false,
+      "composerActions": [
+        {
+          "id": "pet-toggle",
+          "icon": "ext:finch-pet/action",
+          "tooltip": "Show or hide desktop pet"
+        }
+      ],
+      "iconPacks": [
+        {
+          "id": "finch-pet",
+          "label": "Finch Pet Icons"
+        }
+      ]
+    },
+    "extensionType": "official",
+    "categories": [
+      "productivity"
+    ],
+    "privacyPolicyUrl": "https://finchwork.app/privacy",
+    "termsOfServiceUrl": "https://finchwork.app/terms",
+    "permissions": {
+      "filesystem": "readwrite",
+      "network": true,
+      "shell": true
+    }
+  },
+  "devDependencies": {
+    "@finch.app/minitool-api": "^0.1.16",
+    "@types/adm-zip": "^0.5.8",
+    "@types/node": "^26.1.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3"
+  },
+  "files": [
+    "dist/",
+    "pets/",
+    "pet-canvas.js",
+    "icon.png",
+    "icons/",
+    "i18n/",
+    "README.md",
+    "README.en-US.md",
+    "README.zh-CN.md",
+    "package.json"
+  ],
+  "dependencies": {
+    "adm-zip": "^0.5.18"
+  }
+}

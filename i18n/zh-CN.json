@@ -1,0 +1,67 @@
+{
+  "name": "Finch Pet",
+  "description": "Finch 桌宠。",
+  "systemPrompt": "这个扩展提供 Finch 桌宠。使用 pet_show/pet_hide 显示或隐藏，pet_list/pet_select 管理宠物，pet_add 导入本地目录、本地 zip、本地图片、远程图片 URL 或 Petdex 页面 URL，pet_remove 删除自定义宠物，pet_set_state 设置状态，pet_say 显示短消息。",
+  "toolMeta": {
+    "name": "Finch Pet"
+  },
+  "composerActions": {
+    "pet-toggle": {
+      "tooltip": "显示或隐藏桌宠"
+    }
+  },
+  "runtime": {
+    "waiting": "这里需要你点个头",
+    "waitingWithTitle": "「{title}」这里需要你点个头",
+    "waitingMany": "有几件事在等你点头",
+    "runningMany": "我正同时照看着几件事",
+    "workingFallback": "我还在忙着呢",
+    "unread": "有好消息，记得来看看",
+    "openSession": "去看看",
+    "phrases": {
+      "start1": "好啦，交给我吧",
+      "start2": "我来看看",
+      "start3": "收到，这就开工",
+      "start4": "好，我出发啦",
+      "thinking1": "让我想想…",
+      "thinking2": "我先捋一捋",
+      "thinking3": "好像有点眉目了",
+      "thinking4": "容我琢磨一下",
+      "thinking5": "我去找找线索",
+      "answering1": "我来把它说清楚",
+      "answering2": "快整理好啦",
+      "answering3": "我正在收拢思路",
+      "answering4": "让我写得更明白一点",
+      "working1": "我去处理一下",
+      "working2": "正在把事情办妥",
+      "working3": "再忙一小会儿",
+      "working4": "我来收拾这里",
+      "working5": "进展得很顺利",
+      "done1": "神功大成！",
+      "done2": "搞掂收工！",
+      "done3": "问题不大，拿捏！",
+      "done4": "这波稳拿下！",
+      "done5": "大功告成，快来看看！",
+      "done6": "老铁，安排上了！",
+      "error1": "这一步没走稳",
+      "error2": "这里遇到点麻烦",
+      "error3": "好像绕进死胡同了",
+      "error4": "这次没能走通",
+      "interrupted1": "那就先停在这里",
+      "interrupted2": "好，我们先歇一会儿",
+      "interrupted3": "我先把进度放在这里"
+    }
+  },
+  "promptGuides": {
+    "show-pet": {
+      "title": "显示宠物",
+      "description": "显示当前宠物",
+      "prompt": "显示宠物"
+    },
+    "list-pets": {
+      "title": "查看宠物",
+      "description": "列出可用宠物",
+      "prompt": "列出可用宠物"
+    }
+  }
+}

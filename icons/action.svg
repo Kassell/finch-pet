@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="50 50 215 200">
+  <g fill="none" stroke="#000000" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <!-- body -->
+    <path d="M55 185 C55 105 105 55 175 65 C235 74 250 145 220 205 C190 250 90 245 55 185Z"/>
+    <!-- head/face separation -->
+    <path d="M170 70 C150 95 150 145 165 205"/>
+    <!-- wing -->
+    <path d="M65 175 C90 125 145 120 175 155 C150 175 120 200 65 210 C55 200 55 190 65 175Z"/>
+    <path d="M85 170 C110 155 140 155 160 165"/>
+    <path d="M95 190 C125 180 145 180 160 185"/>
+    <!-- beak -->
+    <path d="M220 115 L260 135 L220 155 Z"/>
+    <path d="M220 135 L255 135"/>
+    <!-- eye -->
+    <circle cx="205" cy="105" r="15"/>
+    <circle cx="210" cy="100" r="4" fill="#000000" stroke="none"/>
+    <!-- feet -->
+    <path d="M120 225 C105 235 105 245 130 245 C145 245 145 230 120 225Z"/>
+    <path d="M175 225 C160 235 165 245 190 245 C205 245 200 230 175 225Z"/>
+    <!-- feather details -->
+    <path d="M75 145 C95 135 115 135 135 145"/>
+    <path d="M70 155 C95 145 120 150 145 160"/>
+  </g>
+</svg>

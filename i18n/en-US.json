@@ -1,0 +1,67 @@
+{
+  "name": "Finch Pet",
+  "description": "Desktop pet for Finch.",
+  "systemPrompt": "This extension provides a desktop pet. Use pet_show/pet_hide to show or hide it, pet_list/pet_select to manage pets, pet_add to import a local folder, local zip, local image, remote image URL, or Petdex page URL, pet_remove to remove custom pets, pet_set_state to set state, and pet_say for a short message.",
+  "toolMeta": {
+    "name": "Finch Pet"
+  },
+  "composerActions": {
+    "pet-toggle": {
+      "tooltip": "Show or hide desktop pet"
+    }
+  },
+  "runtime": {
+    "waiting": "I need your nod here",
+    "waitingWithTitle": "“{title}” needs your nod here",
+    "waitingMany": "A few things are waiting for your nod",
+    "runningMany": "I’m keeping an eye on a few things",
+    "workingFallback": "I’m still working on it",
+    "unread": "Good news—come take a look",
+    "openSession": "Open",
+    "phrases": {
+      "start1": "All right, leave it to me",
+      "start2": "Let me take a look",
+      "start3": "Got it, I’m on it",
+      "start4": "Okay, off I go",
+      "thinking1": "Let me think…",
+      "thinking2": "Let me sort this out",
+      "thinking3": "I think I’m onto something",
+      "thinking4": "Let me mull it over",
+      "thinking5": "I’ll look for a clue",
+      "answering1": "Let me make this clear",
+      "answering2": "Almost ready",
+      "answering3": "I’m pulling the thoughts together",
+      "answering4": "Let me put this more clearly",
+      "working1": "I’ll take care of it",
+      "working2": "Getting things into shape",
+      "working3": "Just a little longer",
+      "working4": "Let me tidy this up",
+      "working5": "It’s coming along nicely",
+      "done1": "Mastery achieved!",
+      "done2": "Done and dusted!",
+      "done3": "No sweat, nailed it!",
+      "done4": "This one’s in the bag!",
+      "done5": "Mission accomplished—come take a look!",
+      "done6": "Buddy, consider it handled!",
+      "error1": "That step didn’t quite land",
+      "error2": "I ran into a little trouble",
+      "error3": "I may have hit a dead end",
+      "error4": "That didn’t work out this time",
+      "interrupted1": "Let’s leave it here for now",
+      "interrupted2": "Okay, let’s take a break",
+      "interrupted3": "I’ll keep our place here"
+    }
+  },
+  "promptGuides": {
+    "show-pet": {
+      "title": "Show pet",
+      "description": "Show the current pet",
+      "prompt": "Show the pet"
+    },
+    "list-pets": {
+      "title": "List pets",
+      "description": "List available pets",
+      "prompt": "List available pets"
+    }
+  }
+}
