@@ -4,10 +4,10 @@
   "type": "module",
   "description": "Desktop pet for Finch.",
   "author": {
-    "name": "Finch Team",
-    "url": "https://finchwork.app"
+    "name": "Kassell",
+    "url": "https://github.com/Kassell"
   },
-  "homepage": "https://finchwork.app",
+  "homepage": "https://github.com/Kassell/finch-pet",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Kassell/finch-pet.git"
@@ -63,7 +63,7 @@
         }
       ]
     },
-    "extensionType": "official",
+    "extensionType": "community",
     "categories": [
       "productivity"
     ],
