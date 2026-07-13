@@ -2,8 +2,8 @@
  * 宠物库:目录列举、去重校验、选中解析、PetRecord 组装、宠物包加载。
  *
  * Storage model:
- * - Built-in pets: <extension>/pets/<name>/ (cannot be removed)
- * - Custom pets: <ctx.storagePath>/pets/<safe-name>/
+ * - Bundled pets, when present: <extension>/pets/<name>/ (managed by the extension package)
+ * - User pets: <ctx.storagePath>/pets/<safe-name>/
  */
 import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -15,7 +15,7 @@ import type { PetRegistryStore } from './registry.js';
 import { DuplicatePetIdError, NoAvailablePetError } from './errors.js';
 
 export interface PetLibraryDeps {
-  ctx: finch.MiniToolContext;
+  ctx: finch.ExtensionContext;
   builtinPetsRoot: string;
   customPetsRoot: string;
   registry: PetRegistryStore;
@@ -45,6 +45,7 @@ export function createPetLibrary({ ctx, builtinPetsRoot, customPetsRoot, registr
     ];
   };
 
+  // 当前版本可能不随包携带默认宠物；这里保持可选 fallback，等默认资源重做后可直接放回 pets/。
   const getDefaultPetFolder = async () => (await listBuiltinPetFolders())[0];
 
   const groupPetFoldersById = (folders: PetFolder[]) => {

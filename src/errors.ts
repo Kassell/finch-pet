@@ -1,7 +1,7 @@
 import type { PetFolder } from './types.js';
 
 export class NoAvailablePetError extends Error {
-  constructor() { super('no pets available'); }
+  constructor() { super('No pets available. Add a Petdex pet first with pet_add.'); }
 }
 
 export class DuplicatePetIdError extends Error {

@@ -27,7 +27,7 @@ function readIconSvg(name: string): string {
   return readFileSync(new URL(`../icons/${name}.svg`, import.meta.url), 'utf-8');
 }
 
-export function registerPetExtension(ctx: finch.MiniToolContext) {
+export function registerPetExtension(ctx: finch.ExtensionContext) {
   ctx.subscriptions.push(
     ctx.icons.register('finch-pet', {
       action: { svg: readIconSvg('action'), description: 'Desktop pet action' },
@@ -227,13 +227,13 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     }),
     ctx.tools.register({
       name: 'pet_list', title: 'List desktop pets',
-      description: 'List available Petdex desktop pets, including bundled built-in pets and user-added custom pets.',
+      description: 'List available Petdex desktop pets, including bundled pets when present and user-added pets.',
       inputSchema: { type: 'object', properties: {} }, risk: 'low',
       async execute() {
         const pets = await library.listPets();
-        if (!pets.length) return { isError: true, content: [{ type: 'text', text: 'no pets available' }] };
+        if (!pets.length) return { isError: true, content: [{ type: 'text', text: 'No pets available. Add a Petdex pet first with pet_add.' }] };
         const text = pets.map((pet) => {
-          const kind = pet.kind === 'builtin' ? '内置/不可删除' : '自定义';
+          const kind = pet.kind === 'builtin' ? '内置' : '自定义';
           const status = pet.health === 'ok' ? '' : `，${pet.health}`;
           const source = `，来源:${pet.sourceType}`;
           const warning = pet.warning ? `，${pet.warning}` : '';
@@ -270,13 +270,13 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       },
     }),
     ctx.tools.register({
-      name: 'pet_add', title: 'Add custom Petdex pet',
-      description: 'Import a Petdex-compatible pet source into storage. Spritesheets are parsed as a fixed 8 columns × 9 rows grid; 192×208 per frame is only the minimum/base size, and higher-resolution sheets are allowed. Source may be a local Petdex pet folder, local .zip package, spritesheet image, remote .webp/.png spritesheet URL, or a https://petdex.dev/pets/<slug> page. Built-in pets are selected, not duplicated.',
+      name: 'pet_add', title: 'Add Petdex pet',
+      description: 'Import a Petdex-compatible pet source into storage. Spritesheets are parsed as a fixed 8 columns × 9 rows grid; 192×208 per frame is only the minimum/base size, and higher-resolution sheets are allowed. Source may be a local Petdex pet folder, local .zip package, spritesheet image, remote .webp/.png spritesheet URL, or a https://petdex.dev/pets/<slug> page. If a bundled pet with the same id exists, it is selected instead of duplicated.',
       inputSchema: {
         type: 'object',
         properties: {
           source: { type: 'string', description: 'Petdex pet source: local pet folder, local .zip package, local 8×9 spritesheet image, remote .webp/.png spritesheet URL, or https://petdex.dev/pets/<slug> URL.' },
-          name: { type: 'string', description: 'Optional custom pet name/slug. Built-in names are reserved.' },
+          name: { type: 'string', description: 'Optional pet name/slug.' },
         },
         required: ['source'],
       },
@@ -299,9 +299,9 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       },
     }),
     ctx.tools.register({
-      name: 'pet_remove', title: 'Remove custom Petdex pet',
-      description: 'Remove a user-added custom pet. Bundled built-in pets cannot be removed.',
-      inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Custom pet name/slug to remove.' } }, required: ['name'] }, risk: 'medium',
+      name: 'pet_remove', title: 'Remove Petdex pet',
+      description: 'Remove a user-added Petdex pet from local storage. Bundled pets, when present, are kept with the extension package.',
+      inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Pet name/slug to remove from local storage.' } }, required: ['name'] }, risk: 'medium',
       async execute(input) {
         const fallbackPet = await library.getFallbackPetName();
         const name = safePetName((input as { name?: unknown }).name, fallbackPet ?? 'pet');
@@ -309,9 +309,15 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
         if (pet?.kind === 'builtin') return { isError: true, content: [{ type: 'text', text: `builtin pet cannot be removed: ${name}` }] };
         const dir = join(customPetsRoot, name);
         if (!await exists(dir)) return { isError: true, content: [{ type: 'text', text: `not found: ${name}` }] };
+        const wasSelected = await library.getSelectedPetName() === name;
         await rm(dir, { recursive: true, force: true });
         await registry.remove(name);
-        if (await library.getSelectedPetName() === name && fallbackPet) { await ctx.storage.set('selectedPet', fallbackPet); await reopenIfVisible(); }
+        if (wasSelected) {
+          const nextPet = await library.getFallbackPetName();
+          await ctx.storage.set('selectedPet', nextPet ?? '');
+          if (nextPet) await reopenIfVisible();
+          else { await setVisiblePreference(false); close(); }
+        }
         return { content: [{ type: 'text', text: `removed: ${name}` }] };
       },
     }),

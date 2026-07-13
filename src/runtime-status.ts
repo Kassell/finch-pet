@@ -33,7 +33,7 @@ export interface RuntimeStatusHost {
 
 export type PetRuntimeStatus = ReturnType<typeof createPetRuntimeStatus>;
 
-export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: RuntimeStatusHost) {
+export function createPetRuntimeStatus(ctx: finch.ExtensionContext, host: RuntimeStatusHost) {
   const sessionRuntimes = new Map<string, SessionRuntime>();
   const dismissedSessionBubbles = new Set<string>();
   let lastRuntimeState: PetState | undefined;
