@@ -31,6 +31,7 @@ interface McpClientCapability {
     args: string[];
     cwd: string;
     description?: string;
+    env?: Record<string, string>;
     ownerExtensionId?: string;
     ownerExtensionName?: string;
   }): Promise<{ ok: boolean; error?: string }>;
@@ -299,6 +300,7 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
       args: [join(ctx.extension.extensionPath, 'dist', 'mcp-server.js')],
       cwd: ctx.extension.extensionPath,
       description: 'Manage the local Finch Pet library. Tools are discovered lazily through MCP.',
+      env: { ELECTRON_RUN_AS_NODE: '1' },
       ownerExtensionId: ctx.extension.id,
       ownerExtensionName: ctx.extension.displayName,
     }).then((result) => {

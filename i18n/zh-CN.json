@@ -11,7 +11,7 @@
     }
   },
   "pet": {
-    "noAvailable": "当前还没有可显示的宠物。Finch 官方宠物仍在设计制作中，你可以先前往 Petdex（https://petdex.dev/pets）挑选一只喜欢的宠物，再把它的页面链接发给我，我会帮你安装。"
+    "noAvailable": "当前还没有可显示的宠物。Finch 官方宠物仍在设计制作中，你可以先前往 Petdex（https://petdex.dev）挑选一只喜欢的宠物，再把它的页面链接发给我，我会帮你安装。"
   },
   "runtime": {
     "waiting": "这里需要你点个头",

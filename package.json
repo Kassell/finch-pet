@@ -61,17 +61,6 @@
           "id": "finch-pet",
           "label": "Finch Pet Icons"
         }
-      ],
-      "mcpServers": [
-        {
-          "name": "finch-pet",
-          "command": "node",
-          "args": [
-            "dist/mcp-server.js"
-          ],
-          "cwd": ".",
-          "description": "Manage the local Finch Pet library. Tools are discovered lazily through MCP."
-        }
       ]
     },
     "requires": {

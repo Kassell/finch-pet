@@ -11,7 +11,7 @@
     }
   },
   "pet": {
-    "noAvailable": "No pet is ready to display yet. Finch's official pets are still being designed. For now, visit Petdex (https://petdex.dev/pets), choose a pet you like, and send me its page URL—I can install it for you."
+    "noAvailable": "No pet is ready to display yet. Finch's official pets are still being designed. For now, visit Petdex (https://petdex.dev), choose a pet you like, and send me its page URL—I can install it for you."
   },
   "runtime": {
     "waiting": "I need your nod here",
