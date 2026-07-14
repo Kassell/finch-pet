@@ -28,18 +28,22 @@ Spritesheets are parsed as a fixed **8 columns × 9 rows** grid. The base frame 
 
 ## Tools
 
+The extension keeps one frequently used tool in the model context:
+
 | Tool | Description |
 |---|---|
-| `pet_show` | Show the selected desktop pet. |
-| `pet_hide` | Hide the desktop pet. |
+| `pet_control` | Show/hide the pet, play an animation state, or display a short speech bubble. |
+
+Pet-library management is provided by the local `finch-pet` MCP server and discovered lazily:
+
+| MCP tool | Description |
+|---|---|
 | `pet_list` | List available pets. |
 | `pet_select` | Select the active pet by name. |
 | `pet_add` | Import a Petdex-compatible pet. |
 | `pet_remove` | Remove a user-added pet from local storage. |
-| `pet_set_state` | Play a Petdex animation state. |
-| `pet_say` | Show a short speech bubble. |
 
-If no pet is available, `pet_show` and `pet_list` report that a pet must be imported first.
+If no pet is available, `pet_control` with `action: "show"` and `pet_list` report that a pet must be imported first.
 
 ## Permissions
 

@@ -1,7 +1,7 @@
 {
   "name": "Finch Pet",
   "description": "Finch 桌宠。",
-  "systemPrompt": "这个扩展提供 Finch 桌宠。使用 pet_show/pet_hide 显示或隐藏，pet_list/pet_select 管理宠物，pet_add 导入本地目录、本地 zip、本地图片、远程图片 URL 或 Petdex 页面 URL，pet_remove 删除自定义宠物，pet_set_state 设置状态，pet_say 显示短消息。",
+  "systemPrompt": "这个扩展提供 Finch 桌宠。常用的显示、隐藏、动画和气泡操作统一使用 pet_control；宠物库管理工具 pet_list、pet_select、pet_add、pet_remove 由本地 finch-pet MCP 按需发现。",
   "toolMeta": {
     "name": "Finch Pet"
   },

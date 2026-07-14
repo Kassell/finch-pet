@@ -1,7 +1,7 @@
 {
   "name": "Finch Pet",
   "description": "Desktop pet for Finch.",
-  "systemPrompt": "This extension provides a desktop pet. Use pet_show/pet_hide to show or hide it, pet_list/pet_select to manage pets, pet_add to import a local folder, local zip, local image, remote image URL, or Petdex page URL, pet_remove to remove custom pets, pet_set_state to set state, and pet_say for a short message.",
+  "systemPrompt": "This extension provides a desktop pet. Use pet_control for common show, hide, animation, and speech actions. Pet library management tools (pet_list, pet_select, pet_add, pet_remove) are provided by the local finch-pet MCP server and should be discovered only when needed.",
   "toolMeta": {
     "name": "Finch Pet"
   },

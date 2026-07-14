@@ -22,6 +22,7 @@ import { DuplicatePetIdError, NoAvailablePetError } from './errors.js';
 import { createPetLibrary } from './pet-library.js';
 import { createPetImporters, type ImportPetResult } from './importers.js';
 import { createPetRuntimeStatus } from './runtime-status.js';
+import { createPetManagementIpcServer, type PetManagementHandlers, type PetManagementResult } from './management-ipc.js';
 
 function readIconSvg(name: string): string {
   return readFileSync(new URL(`../icons/${name}.svg`, import.meta.url), 'utf-8');
@@ -198,6 +199,82 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
     },
   });
 
+  const managementHandlers: PetManagementHandlers = {
+    async pet_list() {
+      const pets = await library.listPets();
+      if (!pets.length) return { isError: true, content: [{ type: 'text', text: 'No pets available. Add a Petdex pet first with pet_add.' }] };
+      const text = pets.map((pet) => {
+        const kind = pet.kind === 'builtin' ? '内置' : '自定义';
+        const status = pet.health === 'ok' ? '' : `，${pet.health}`;
+        const source = `，来源:${pet.sourceType}`;
+        const warning = pet.warning ? `，${pet.warning}` : '';
+        return `- ${pet.name} (${pet.displayName}) — ${kind}${source}${status}${pet.selected ? '，当前' : ''}${warning}`;
+      }).join('\n');
+      const content: PetManagementResult['content'] = [{ type: 'text', text }];
+      for (const pet of pets) {
+        if (!pet.preview) continue;
+        content.push(
+          { type: 'text', text: `${pet.selected ? '当前：' : ''}${pet.displayName} (${pet.name}) 的 idle 首帧预览` },
+          { type: 'image', data: pet.preview.data, mimeType: pet.preview.mimeType },
+        );
+      }
+      return { content };
+    },
+    async pet_select(params) {
+      const fallbackPet = await library.getFallbackPetName();
+      const name = safePetName(params.name, fallbackPet ?? 'pet');
+      const folders = await library.getPetFoldersById(name);
+      const available = await library.listAvailablePetFolders();
+      const availableMatch = available.find((pet) => pet.name === name);
+      if (folders.length > 1 && !availableMatch) {
+        if (fallbackPet) { await ctx.storage.set('selectedPet', fallbackPet); await reopenIfVisible(); }
+        return { isError: true, content: [{ type: 'text', text: library.duplicatePetMessage(name, folders) }] };
+      }
+      if (!availableMatch) return { isError: true, content: [{ type: 'text', text: `not found: ${name}` }] };
+      await ctx.storage.set('selectedPet', name);
+      await reopenIfVisible();
+      return { content: [{ type: 'text', text: `selected: ${name}` }] };
+    },
+    async pet_add(params) {
+      const source = typeof params.source === 'string' ? params.source : typeof params.imagePath === 'string' ? params.imagePath : '';
+      if (!source.trim()) return { isError: true, content: [{ type: 'text', text: 'source required' }] };
+      let imported: ImportPetResult;
+      try {
+        imported = await importers.importPetSource(source, typeof params.name === 'string' ? params.name : undefined);
+      } catch (err) {
+        if (err instanceof DuplicatePetIdError) return { isError: true, content: [{ type: 'text', text: library.duplicatePetMessage(err.id, err.folders) }] };
+        throw err;
+      }
+      const text = imported.duplicate === true
+        ? `selected existing: ${imported.name} (${imported.displayName})`
+        : `added: ${imported.name} (${imported.displayName})`;
+      return { content: [{ type: 'text', text }] };
+    },
+    async pet_remove(params) {
+      const fallbackPet = await library.getFallbackPetName();
+      const name = safePetName(params.name, fallbackPet ?? 'pet');
+      const pet = (await library.listPets()).find((item) => item.name === name);
+      if (pet?.kind === 'builtin') return { isError: true, content: [{ type: 'text', text: `builtin pet cannot be removed: ${name}` }] };
+      const dir = join(customPetsRoot, name);
+      if (!await exists(dir)) return { isError: true, content: [{ type: 'text', text: `not found: ${name}` }] };
+      const wasSelected = await library.getSelectedPetName() === name;
+      await rm(dir, { recursive: true, force: true });
+      await registry.remove(name);
+      if (wasSelected) {
+        const nextPet = await library.getFallbackPetName();
+        await ctx.storage.set('selectedPet', nextPet ?? '');
+        if (nextPet) await reopenIfVisible();
+        else { await setVisiblePreference(false); close(); }
+      }
+      return { content: [{ type: 'text', text: `removed: ${name}` }] };
+    },
+  };
+
+  const managementIpc = createPetManagementIpcServer(managementHandlers, ctx.logger);
+  void managementIpc.start().catch((err: unknown) => {
+    ctx.logger.warn('start pet management IPC failed', err instanceof Error ? err.message : String(err));
+  });
+
   const petToggleAction = ctx.composerActions.register('pet-toggle', {
     async onClick() {
       if (petWindow) {
@@ -211,11 +288,42 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
 
   ctx.subscriptions.push(
     petToggleAction,
+    managementIpc,
     ctx.tools.register({
-      name: 'pet_show', title: 'Show desktop pet',
-      description: 'Show the selected floating Petdex desktop pet.',
-      inputSchema: { type: 'object', properties: {} }, risk: 'low',
-      async execute() {
+      name: 'pet_control', title: 'Control desktop pet',
+      description: 'Control the active desktop pet. Show or hide it, play an animation state, or display a short speech bubble.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['show', 'hide', 'set_state', 'say'], description: 'Pet action to perform.' },
+          state: { type: 'string', enum: PET_STATES, description: `Required for set_state. One of: ${PET_STATES.join(', ')}.` },
+          playMode: { type: 'string', enum: ['once', 'loop'], description: 'Animation playback mode for set_state.' },
+          message: { type: 'string', description: 'Speech bubble text for say, or optional text for set_state.' },
+        },
+        required: ['action'],
+      },
+      risk: 'low',
+      async execute(input) {
+        const args = input as { action?: unknown; state?: unknown; playMode?: unknown; message?: unknown };
+        if (args.action === 'hide') {
+          await setVisiblePreference(false);
+          close();
+          return { content: [{ type: 'text', text: 'hidden' }] };
+        }
+        if (args.action === 'say') {
+          const message = typeof args.message === 'string' ? args.message.trim() : '';
+          if (!message) return { isError: true, content: [{ type: 'text', text: 'message required for say' }] };
+          await postToPet({ type: 'say', message, transientMs: 2600 });
+          return { content: [{ type: 'text', text: 'message sent' }] };
+        }
+        if (args.action === 'set_state') {
+          const state = parsePetState(args.state);
+          if (!state) return { isError: true, content: [{ type: 'text', text: `invalid state: ${PET_STATES.join(', ')}` }] };
+          const playMode = args.playMode === 'loop' ? 'loop' : 'once';
+          await postToPet({ type: 'setState', state, playMode, message: typeof args.message === 'string' ? args.message : undefined, transientMs: state === 'idle' || playMode === 'once' ? 0 : 2400 });
+          return { content: [{ type: 'text', text: `state: ${state}` }] };
+        }
+        if (args.action !== 'show') return { isError: true, content: [{ type: 'text', text: 'invalid action' }] };
         try {
           await showPet();
           return { content: [{ type: 'text', text: `shown: ${await library.getSelectedPetName()}` }] };
@@ -223,136 +331,6 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
           if (err instanceof NoAvailablePetError) return { isError: true, content: [{ type: 'text', text: err.message }] };
           throw err;
         }
-      },
-    }),
-    ctx.tools.register({
-      name: 'pet_list', title: 'List desktop pets',
-      description: 'List available Petdex desktop pets, including bundled pets when present and user-added pets.',
-      inputSchema: { type: 'object', properties: {} }, risk: 'low',
-      async execute() {
-        const pets = await library.listPets();
-        if (!pets.length) return { isError: true, content: [{ type: 'text', text: 'No pets available. Add a Petdex pet first with pet_add.' }] };
-        const text = pets.map((pet) => {
-          const kind = pet.kind === 'builtin' ? '内置' : '自定义';
-          const status = pet.health === 'ok' ? '' : `，${pet.health}`;
-          const source = `，来源:${pet.sourceType}`;
-          const warning = pet.warning ? `，${pet.warning}` : '';
-          return `- ${pet.name} (${pet.displayName}) — ${kind}${source}${status}${pet.selected ? '，当前' : ''}${warning}`;
-        }).join('\n');
-        const content: finch.ToolContent[] = [{ type: 'text', text }];
-        for (const pet of pets) {
-          if (!pet.preview) continue;
-          content.push(
-            { type: 'text', text: `${pet.selected ? '当前：' : ''}${pet.displayName} (${pet.name}) 的 idle 首帧预览` },
-            { type: 'image', data: pet.preview.data, mimeType: pet.preview.mimeType },
-          );
-        }
-        return { content };
-      },
-    }),
-    ctx.tools.register({
-      name: 'pet_select', title: 'Select desktop pet',
-      description: 'Select the active Petdex desktop pet by name/slug.',
-      inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Pet name/slug to select.' } }, required: ['name'] }, risk: 'low',
-      async execute(input) {
-        const fallbackPet = await library.getFallbackPetName();
-        const name = safePetName((input as { name?: unknown }).name, fallbackPet ?? 'pet');
-        const folders = await library.getPetFoldersById(name);
-        const available = await library.listAvailablePetFolders();
-        const availableMatch = available.find((pet) => pet.name === name);
-        if (folders.length > 1 && !availableMatch) {
-          if (fallbackPet) { await ctx.storage.set('selectedPet', fallbackPet); await reopenIfVisible(); }
-          return { isError: true, content: [{ type: 'text', text: library.duplicatePetMessage(name, folders) }] };
-        }
-        if (!availableMatch) return { isError: true, content: [{ type: 'text', text: `not found: ${name}` }] };
-        await ctx.storage.set('selectedPet', name); await reopenIfVisible();
-        return { content: [{ type: 'text', text: `selected: ${name}` }] };
-      },
-    }),
-    ctx.tools.register({
-      name: 'pet_add', title: 'Add Petdex pet',
-      description: 'Import a Petdex-compatible pet source into storage. Spritesheets are parsed as a fixed 8 columns × 9 rows grid; 192×208 per frame is only the minimum/base size, and higher-resolution sheets are allowed. Source may be a local Petdex pet folder, local .zip package, spritesheet image, remote .webp/.png spritesheet URL, or a https://petdex.dev/pets/<slug> page. If a bundled pet with the same id exists, it is selected instead of duplicated.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          source: { type: 'string', description: 'Petdex pet source: local pet folder, local .zip package, local 8×9 spritesheet image, remote .webp/.png spritesheet URL, or https://petdex.dev/pets/<slug> URL.' },
-          name: { type: 'string', description: 'Optional pet name/slug.' },
-        },
-        required: ['source'],
-      },
-      risk: 'medium',
-      async execute(input) {
-        const args = input as { source?: unknown; imagePath?: unknown; name?: unknown };
-        const source = typeof args.source === 'string' ? args.source : typeof args.imagePath === 'string' ? args.imagePath : '';
-        if (!source.trim()) return { isError: true, content: [{ type: 'text', text: 'source required' }] };
-        let imported: ImportPetResult;
-        try {
-          imported = await importers.importPetSource(source, typeof args.name === 'string' ? args.name : undefined);
-        } catch (err) {
-          if (err instanceof DuplicatePetIdError) return { isError: true, content: [{ type: 'text', text: library.duplicatePetMessage(err.id, err.folders) }] };
-          throw err;
-        }
-        const text = imported.duplicate === true
-          ? `selected existing: ${imported.name} (${imported.displayName})`
-          : `added: ${imported.name} (${imported.displayName})`;
-        return { content: [{ type: 'text', text }] };
-      },
-    }),
-    ctx.tools.register({
-      name: 'pet_remove', title: 'Remove Petdex pet',
-      description: 'Remove a user-added Petdex pet from local storage. Bundled pets, when present, are kept with the extension package.',
-      inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Pet name/slug to remove from local storage.' } }, required: ['name'] }, risk: 'medium',
-      async execute(input) {
-        const fallbackPet = await library.getFallbackPetName();
-        const name = safePetName((input as { name?: unknown }).name, fallbackPet ?? 'pet');
-        const pet = (await library.listPets()).find((item) => item.name === name);
-        if (pet?.kind === 'builtin') return { isError: true, content: [{ type: 'text', text: `builtin pet cannot be removed: ${name}` }] };
-        const dir = join(customPetsRoot, name);
-        if (!await exists(dir)) return { isError: true, content: [{ type: 'text', text: `not found: ${name}` }] };
-        const wasSelected = await library.getSelectedPetName() === name;
-        await rm(dir, { recursive: true, force: true });
-        await registry.remove(name);
-        if (wasSelected) {
-          const nextPet = await library.getFallbackPetName();
-          await ctx.storage.set('selectedPet', nextPet ?? '');
-          if (nextPet) await reopenIfVisible();
-          else { await setVisiblePreference(false); close(); }
-        }
-        return { content: [{ type: 'text', text: `removed: ${name}` }] };
-      },
-    }),
-    ctx.tools.register({
-      name: 'pet_set_state', title: 'Set Petdex pet state',
-      description: `Play a Petdex state. Fixed row states: ${PET_STATES.join(', ')}.`,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          state: { type: 'string', enum: PET_STATES, description: `Official Petdex state. One of: ${PET_STATES.join(', ')}.` },
-          playMode: { type: 'string', enum: ['once', 'loop'], description: 'Playback mode. once plays one animation cycle; loop keeps playing until changed.' },
-          message: { type: 'string', description: 'Optional short speech bubble text.' },
-        },
-        required: ['state'],
-      },
-      risk: 'low',
-      async execute(input) {
-        const args = input as { state?: unknown; playMode?: unknown; message?: unknown };
-        const state = parsePetState(args.state);
-        if (!state) {
-          return { isError: true, content: [{ type: 'text', text: `invalid state: ${PET_STATES.join(', ')}` }] };
-        }
-        const playMode = args.playMode === 'loop' ? 'loop' : 'once';
-        await postToPet({ type: 'setState', state, playMode, message: typeof args.message === 'string' ? args.message : undefined, transientMs: state === 'idle' || playMode === 'once' ? 0 : 2400 });
-        return { content: [{ type: 'text', text: `state: ${state}` }] };
-      },
-    }),
-    ctx.tools.register({
-      name: 'pet_say', title: 'Make pet say something',
-      description: 'Show a short speech bubble near the desktop pet.',
-      inputSchema: { type: 'object', properties: { message: { type: 'string', description: 'Short speech bubble text.' } } }, risk: 'low',
-      async execute(input) {
-        const args = input as { message?: unknown };
-        await postToPet({ type: 'say', message: typeof args.message === 'string' && args.message.trim() ? args.message.trim() : '', transientMs: 2600 });
-        return { content: [{ type: 'text', text: 'message sent' }] };
       },
     }),
     ctx.events.onAgentEvent((event) => {
@@ -366,12 +344,6 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
     }),
     ctx.i18n.onDidChangeLocale((locale) => {
       void runtime.refreshRuntimeLocale(locale).catch((err: unknown) => ctx.logger.warn('refresh pet locale failed', err instanceof Error ? err.message : String(err)));
-    }),
-    ctx.tools.register({
-      name: 'pet_hide', title: 'Hide desktop pet',
-      description: 'Hide / close the floating desktop pet.',
-      inputSchema: { type: 'object', properties: {} }, risk: 'low',
-      async execute() { await setVisiblePreference(false); close(); return { content: [{ type: 'text', text: 'hidden' }] }; },
     }),
     { dispose: close },
   );
