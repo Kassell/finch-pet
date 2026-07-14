@@ -57,3 +57,7 @@ npm run build
 ```
 
 `npm run build` 会从 `canvas/` 构建 Canvas 端脚本，并生成 `pet-canvas.js`。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 发布。

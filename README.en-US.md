@@ -57,3 +57,7 @@ npm run build
 ```
 
 The canvas bundle is generated from `canvas/` into `pet-canvas.js` during `npm run build`.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
