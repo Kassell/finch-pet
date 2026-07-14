@@ -24,6 +24,19 @@ import { createPetImporters, type ImportPetResult } from './importers.js';
 import { createPetRuntimeStatus } from './runtime-status.js';
 import { createPetManagementIpcServer, type PetManagementHandlers, type PetManagementResult } from './management-ipc.js';
 
+interface McpClientCapability {
+  registerServer(input: {
+    name: string;
+    command: string;
+    args: string[];
+    cwd: string;
+    description?: string;
+    ownerExtensionId?: string;
+    ownerExtensionName?: string;
+  }): Promise<{ ok: boolean; error?: string }>;
+  unregisterServer(name: string): Promise<{ ok: boolean }>;
+}
+
 function readIconSvg(name: string): string {
   return readFileSync(new URL(`../icons/${name}.svg`, import.meta.url), 'utf-8');
 }
@@ -199,10 +212,12 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
     },
   });
 
+  const noAvailablePetMessage = () => ctx.i18n.t('pet.noAvailable');
+
   const managementHandlers: PetManagementHandlers = {
     async pet_list() {
       const pets = await library.listPets();
-      if (!pets.length) return { isError: true, content: [{ type: 'text', text: 'No pets available. Add a Petdex pet first with pet_add.' }] };
+      if (!pets.length) return { isError: true, content: [{ type: 'text', text: noAvailablePetMessage() }] };
       const text = pets.map((pet) => {
         const kind = pet.kind === 'builtin' ? '内置' : '自定义';
         const status = pet.health === 'ok' ? '' : `，${pet.health}`;
@@ -275,6 +290,27 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
     ctx.logger.warn('start pet management IPC failed', err instanceof Error ? err.message : String(err));
   });
 
+  if (ctx.capabilities.has('mcp.client')) {
+    const mcp = ctx.capabilities.get<McpClientCapability>('mcp.client');
+    const serverName = 'finch-pet';
+    void mcp.registerServer({
+      name: serverName,
+      command: process.execPath,
+      args: [join(ctx.extension.extensionPath, 'dist', 'mcp-server.js')],
+      cwd: ctx.extension.extensionPath,
+      description: 'Manage the local Finch Pet library. Tools are discovered lazily through MCP.',
+      ownerExtensionId: ctx.extension.id,
+      ownerExtensionName: ctx.extension.displayName,
+    }).then((result) => {
+      if (!result.ok) ctx.logger.warn('register pet MCP server failed', result.error ?? 'unknown error');
+    }).catch((err: unknown) => {
+      ctx.logger.warn('register pet MCP server failed', err instanceof Error ? err.message : String(err));
+    });
+    ctx.subscriptions.push({
+      dispose: () => { void mcp.unregisterServer(serverName); },
+    });
+  }
+
   const petToggleAction = ctx.composerActions.register('pet-toggle', {
     async onClick() {
       if (petWindow) {
@@ -328,7 +364,7 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
           await showPet();
           return { content: [{ type: 'text', text: `shown: ${await library.getSelectedPetName()}` }] };
         } catch (err) {
-          if (err instanceof NoAvailablePetError) return { isError: true, content: [{ type: 'text', text: err.message }] };
+          if (err instanceof NoAvailablePetError) return { isError: true, content: [{ type: 'text', text: noAvailablePetMessage() }] };
           throw err;
         }
       },
