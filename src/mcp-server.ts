@@ -109,7 +109,7 @@ const handleRequest = async (request: JsonRpcRequest) => {
       result(id, {
         protocolVersion,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'finch-pet', version: '1.0.1' },
+        serverInfo: { name: 'finch-pet', version: '1.0.2' },
       });
       return;
     }
