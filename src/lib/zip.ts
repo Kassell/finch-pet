@@ -1,4 +1,5 @@
-import AdmZip from 'adm-zip';
+import { readFileSync } from 'node:fs';
+import { unzipSync } from 'fflate';
 import type { ZipEntry } from '../types.js';
 
 export function normalizeZipPath(value: string): string | undefined {
@@ -8,15 +9,15 @@ export function normalizeZipPath(value: string): string | undefined {
 }
 
 export function readZipEntries(zipPath: string): ZipEntry[] {
-  const zip = new AdmZip(zipPath);
-  return zip.getEntries()
-    .filter((entry) => !entry.isDirectory)
-    .map((entry) => {
-      const path = normalizeZipPath(entry.entryName);
-      if (!path) return undefined;
-      return { path, data: entry.getData() } satisfies ZipEntry;
-    })
-    .filter((entry): entry is ZipEntry => Boolean(entry));
+  const files = unzipSync(new Uint8Array(readFileSync(zipPath)));
+  const entries: ZipEntry[] = [];
+  for (const [name, data] of Object.entries(files)) {
+    if (name.endsWith('/')) continue;
+    const path = normalizeZipPath(name);
+    if (!path) continue;
+    entries.push({ path, data: Buffer.from(data) });
+  }
+  return entries;
 }
 
 export function zipDirname(path: string): string {
