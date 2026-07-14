@@ -7,7 +7,13 @@
   },
   "composerActions": {
     "pet-toggle": {
-      "tooltip": "显示或隐藏桌宠"
+      "tooltip": "切换桌宠显示",
+      "visible": "已显示",
+      "hidden": "已隐藏",
+      "noPetTitle": "还没有可显示的宠物",
+      "noPetDescription": "请先从 Petdex 安装一只桌宠。",
+      "install": "去安装",
+      "installPrompt": "帮我从 Petdex 安装一只桌宠"
     }
   },
   "pet": {

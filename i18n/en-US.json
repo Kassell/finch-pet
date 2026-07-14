@@ -7,7 +7,13 @@
   },
   "composerActions": {
     "pet-toggle": {
-      "tooltip": "Show or hide desktop pet"
+      "tooltip": "Toggle desktop pet visibility",
+      "visible": "Visible",
+      "hidden": "Hidden",
+      "noPetTitle": "No pet is ready to display",
+      "noPetDescription": "Install a desktop pet from Petdex first.",
+      "install": "Install",
+      "installPrompt": "Help me install a desktop pet from Petdex"
     }
   },
   "pet": {

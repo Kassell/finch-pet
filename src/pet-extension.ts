@@ -314,13 +314,34 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
   }
 
   const petToggleAction = ctx.composerActions.register('pet-toggle', {
-    async onClick() {
+    async getBadge() {
+      return petWindow
+        ? { text: ctx.i18n.t('composerActions.pet-toggle.visible'), active: true }
+        : { text: ctx.i18n.t('composerActions.pet-toggle.hidden') };
+    },
+    async onClick(_context, actions) {
       if (petWindow) {
         await setVisiblePreference(false);
         close();
-        return;
+      } else {
+        try {
+          await showPet();
+        } catch (err) {
+          if (!(err instanceof NoAvailablePetError)) throw err;
+          const result = await ctx.ui.showToast({
+            title: ctx.i18n.t('composerActions.pet-toggle.noPetTitle'),
+            description: ctx.i18n.t('composerActions.pet-toggle.noPetDescription'),
+            variant: 'warning',
+            action: { label: ctx.i18n.t('composerActions.pet-toggle.install') },
+          });
+          if (result.action === 'action') {
+            await actions.composer.fill(ctx.i18n.t('composerActions.pet-toggle.installPrompt'));
+          }
+          return;
+        }
       }
-      await showPet();
+      // 点击后立即重新读取状态，更新按钮的文案和激活态。
+      petToggleAction.notifyUpdate();
     },
   });
 
