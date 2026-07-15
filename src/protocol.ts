@@ -56,8 +56,7 @@ export type CanvasToHostMessage =
   | { type: 'hitTest'; clickThrough: boolean }
   | { type: 'bubbleAction'; action: BubbleAction['id']; sessionId: string }
   | { type: 'openBubbleSession'; sessionId: string }
-  | { type: 'exitPet' }
-  | { type: 'debugDomPointer'; event: string; x: number; y: number; button: number };
+  | { type: 'exitPet' };
 
 const PET_STATE_SET = new Set<string>(PET_STATES);
 
@@ -126,11 +125,6 @@ export function isCanvasToHostMessage(value: unknown): value is CanvasToHostMess
       return typeof value.sessionId === 'string';
     case 'exitPet':
       return true;
-    case 'debugDomPointer':
-      return typeof value.event === 'string'
-        && typeof value.x === 'number'
-        && typeof value.y === 'number'
-        && typeof value.button === 'number';
     default:
       return false;
   }

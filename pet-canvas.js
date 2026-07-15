@@ -1226,13 +1226,6 @@
         button: typeof e.button === "number" ? e.button : 0
       });
       const send = (type, e) => {
-        postToHost({
-          type: "debugDomPointer",
-          event: type,
-          x: e.clientX,
-          y: e.clientY,
-          button: e.button
-        });
         this.onPointer(toPointer(type, e));
       };
       target.addEventListener(

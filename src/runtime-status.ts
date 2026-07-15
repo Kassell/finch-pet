@@ -303,7 +303,6 @@ export function createPetRuntimeStatus(ctx: finch.ExtensionContext, host: Runtim
       }
       case 'permission_request': {
         if (event.sessionId) dismissedSessionBubbles.delete(event.sessionId);
-        ctx.logger.info('pet permission request', event.sessionId ?? 'unknown');
         rememberSession(event, 'waiting', event.toolName);
         clearTransientRuntimeState();
         lastRuntimeState = undefined;
@@ -371,7 +370,6 @@ export function createPetRuntimeStatus(ctx: finch.ExtensionContext, host: Runtim
     lastBubbleKey = '';
     lastPersistentBubbleKey = '';
     lastRuntimeState = undefined;
-    ctx.logger.info('pet locale changed', locale);
     await applyRuntimeStatus(await ctx.status.get());
   };
 

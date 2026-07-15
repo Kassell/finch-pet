@@ -161,9 +161,6 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
       if ((event?.type === 'openBubbleSession' || (event?.type === 'bubbleAction' && event.action === 'open-session')) && event.sessionId) {
         void openSession(event.sessionId).catch((err: unknown) => ctx.logger.warn('open pet session failed', err instanceof Error ? err.message : String(err)));
       }
-      if (event?.type === 'poke') ctx.logger.info('pet was poked', event.state ?? 'unknown');
-      if (event?.type === 'hitTest') ctx.logger.info('pet hit test', event.clickThrough === true ? 'passthrough' : 'interactive');
-      if (event?.type === 'debugDomPointer') ctx.logger.info('pet dom pointer', event.event ?? 'unknown');
       if (event?.type === 'exitPet') {
         void setVisiblePreference(false);
         close();
