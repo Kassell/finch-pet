@@ -22,7 +22,7 @@ import { DuplicatePetIdError, NoAvailablePetError } from './errors.js';
 import { createPetLibrary } from './pet-library.js';
 import { createPetImporters, type ImportPetResult } from './importers.js';
 import { createPetRuntimeStatus } from './runtime-status.js';
-import { createPetManagementIpcServer, type PetManagementHandlers, type PetManagementResult } from './management-ipc.js';
+import { createPetManagementIpcServer, type PetManagementHandlers } from './management-ipc.js';
 
 interface McpClientCapability {
   registerServer(input: {
@@ -40,6 +40,17 @@ interface McpClientCapability {
 
 function readIconSvg(name: string): string {
   return readFileSync(new URL(`../icons/${name}.svg`, import.meta.url), 'utf-8');
+}
+
+function isVersionAtLeast(version: string, minimum: readonly [number, number, number]): boolean {
+  const matched = /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  if (!matched) return false;
+  const current = matched.slice(1, 4).map(Number);
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (current[index] > minimum[index]) return true;
+    if (current[index] < minimum[index]) return false;
+  }
+  return true;
 }
 
 export function registerPetExtension(ctx: finch.ExtensionContext) {
@@ -61,6 +72,14 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
   let petCenterX = rightAlignedPetCenterX;
   let windowPosition: WindowPosition | undefined;
   let positionSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  const supportsDesktopSpaces = typeof ctx.app?.getInfo === 'function'
+    ? ctx.app.getInfo()
+        .then((info) => isVersionAtLeast(info.version, [1, 5, 1]))
+        .catch((err: unknown) => {
+          ctx.logger.warn('read Finch version failed; desktop Space integration disabled', err instanceof Error ? err.message : String(err));
+          return false;
+        })
+    : Promise.resolve(false);
 
   const openSession = async (sessionId: string) => {
     const uri = `finch://open?id=${encodeURIComponent(sessionId)}`;
@@ -119,7 +138,10 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
     const previousCanvasWidth = typeof savedCanvasWidth === 'number' ? savedCanvasWidth : legacyCanvasWidth;
     const previousPetCenterX = previousCanvasWidth <= legacyCanvasWidth ? previousCanvasWidth - 120 : rightAlignedPetCenterX;
     const migratedX = typeof saved?.x === 'number' ? saved.x + previousPetCenterX - rightAlignedPetCenterX : undefined;
-    const { name, kind, pet, spriteDataUrl } = await library.loadPetPackage();
+    const [{ name, kind, pet, spriteDataUrl }, enableDesktopSpaces] = await Promise.all([
+      library.loadPetPackage(),
+      supportsDesktopSpaces,
+    ]);
 
     canvasHeight = expandedCanvasHeight;
     petCenterX = rightAlignedPetCenterX;
@@ -138,9 +160,12 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
       clickThrough: true,
       // 头顶气泡预留区是透明的，需要允许窗口顶越过菜单栏，宠物本体才能贴到屏幕顶。
       allowOffscreen: true,
-      // 桌宠是覆盖层而非普通窗口：不进 Mission Control，切换 Space 时跟随。
-      hiddenInMissionControl: true,
-      visibleOnAllWorkspaces: true,
+      // Finch 1.5.1 起支持桌宠不进入 Mission Control，并跟随所有桌面 Space。
+      // 旧版不传这两个字段，避免依赖尚未实现的 CanvasWindow API。
+      ...(enableDesktopSpaces ? {
+        hiddenInMissionControl: true,
+        visibleOnAllWorkspaces: true,
+      } : {}),
       initialData: {
         petName: name,
         petKind: kind,
@@ -223,15 +248,9 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
         const warning = pet.warning ? `，${pet.warning}` : '';
         return `- ${pet.name} (${pet.displayName}) — ${kind}${source}${status}${pet.selected ? '，当前' : ''}${warning}`;
       }).join('\n');
-      const content: PetManagementResult['content'] = [{ type: 'text', text }];
-      for (const pet of pets) {
-        if (!pet.preview) continue;
-        content.push(
-          { type: 'text', text: `${pet.selected ? '当前：' : ''}${pet.displayName} (${pet.name}) 的 idle 首帧预览` },
-          { type: 'image', data: pet.preview.data, mimeType: pet.preview.mimeType },
-        );
-      }
-      return { content };
+      // MCP 图片内容只接受 JPEG / PNG / GIF / WebP。当前预览是裁切 spritesheet 的
+      // SVG data URL，直接返回会让部分模型拒绝整个工具结果，因此宠物列表只返回文字。
+      return { content: [{ type: 'text' as const, text }] };
     },
     async pet_select(params) {
       const fallbackPet = await library.getFallbackPetName();
@@ -288,56 +307,128 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
     ctx.logger.warn('start pet management IPC failed', err instanceof Error ? err.message : String(err));
   });
 
-  if (ctx.capabilities.has('mcp.client')) {
+  const serverName = 'finch-pet';
+  let mcpRegistrationTimer: ReturnType<typeof setTimeout> | undefined;
+  let registeredMcp: McpClientCapability | undefined;
+  let mcpRegistrationDisposed = false;
+
+  const registerMcpWhenAvailable = async () => {
+    if (mcpRegistrationDisposed || registeredMcp) return;
+    if (!ctx.capabilities.has('mcp.client')) {
+      mcpRegistrationTimer = setTimeout(() => { void registerMcpWhenAvailable(); }, 250);
+      return;
+    }
     const mcp = ctx.capabilities.get<McpClientCapability>('mcp.client');
-    const serverName = 'finch-pet';
-    void mcp.registerServer({
-      name: serverName,
-      command: process.execPath,
-      args: [join(ctx.extension.extensionPath, 'dist', 'mcp-server.js')],
-      cwd: ctx.extension.extensionPath,
-      description: 'Manage the local Finch Pet library. Tools are discovered lazily through MCP.',
-      env: { ELECTRON_RUN_AS_NODE: '1' },
-      ownerExtensionId: ctx.extension.id,
-      ownerExtensionName: ctx.extension.displayName,
-    }).then((result) => {
-      if (!result.ok) ctx.logger.warn('register pet MCP server failed', result.error ?? 'unknown error');
-    }).catch((err: unknown) => {
+    try {
+      const result = await mcp.registerServer({
+        name: serverName,
+        command: process.execPath,
+        args: [join(ctx.extension.extensionPath, 'dist', 'mcp-server.js')],
+        cwd: ctx.extension.extensionPath,
+        description: 'Manage the local Finch Pet library. Tools are discovered lazily through MCP.',
+        env: { ELECTRON_RUN_AS_NODE: '1' },
+        ownerExtensionId: ctx.extension.id,
+        ownerExtensionName: ctx.extension.displayName,
+      });
+      if (!result.ok) {
+        ctx.logger.warn('register pet MCP server failed', result.error ?? 'unknown error');
+        mcpRegistrationTimer = setTimeout(() => { void registerMcpWhenAvailable(); }, 1000);
+        return;
+      }
+      registeredMcp = mcp;
+    } catch (err) {
       ctx.logger.warn('register pet MCP server failed', err instanceof Error ? err.message : String(err));
+      mcpRegistrationTimer = setTimeout(() => { void registerMcpWhenAvailable(); }, 1000);
+    }
+  };
+
+  void registerMcpWhenAvailable();
+  ctx.subscriptions.push({
+    dispose: () => {
+      mcpRegistrationDisposed = true;
+      if (mcpRegistrationTimer) clearTimeout(mcpRegistrationTimer);
+      if (registeredMcp) void registeredMcp.unregisterServer(serverName);
+    },
+  });
+
+  const showNoPetToast = async (actions: finch.ComposerActionActions) => {
+    const result = await ctx.ui.showToast({
+      title: ctx.i18n.t('composerActions.pet-toggle.noPetTitle'),
+      description: ctx.i18n.t('composerActions.pet-toggle.noPetDescription'),
+      variant: 'warning',
+      action: { label: ctx.i18n.t('composerActions.pet-toggle.install') },
     });
-    ctx.subscriptions.push({
-      dispose: () => { void mcp.unregisterServer(serverName); },
-    });
-  }
+    if (result.action === 'action') await actions.composer.fill(ctx.i18n.t('composerActions.pet-toggle.installPrompt'));
+  };
 
   const petToggleAction = ctx.composerActions.register('pet-toggle', {
     async getBadge() {
-      return petWindow
-        ? { text: ctx.i18n.t('composerActions.pet-toggle.visible'), active: true }
-        : { text: ctx.i18n.t('composerActions.pet-toggle.hidden') };
+      return { text: 'Finch Pet', active: !!petWindow };
     },
-    async onClick(_context, actions) {
-      if (petWindow) {
+    async getMenu() {
+      const pets = await library.listPets();
+      const selectablePets = pets.filter((pet) => pet.health !== 'missing' && pet.health !== 'invalid');
+      const petChildren: finch.ComposerActionMenuItem[] = selectablePets.length
+        ? selectablePets.map((pet) => ({
+            id: `select:${pet.name}`,
+            label: pet.displayName,
+            description: ctx.i18n.t(`composerActions.pet-toggle.${pet.kind}`),
+            current: pet.selected,
+            disabled: pet.health !== 'ok' && pet.health !== 'external',
+          }))
+        : [{ id: 'select:none', label: ctx.i18n.t('composerActions.pet-toggle.noPets'), disabled: true }];
+
+      return [
+        {
+          id: petWindow ? 'visibility:hide' : 'visibility:show',
+          label: ctx.i18n.t(`composerActions.pet-toggle.${petWindow ? 'hidePet' : 'showPet'}`),
+          iconName: petWindow ? 'toggle-right' : 'toggle-left',
+        },
+        {
+          id: 'select-pet',
+          label: ctx.i18n.t('composerActions.pet-toggle.selectPet'),
+          iconName: 'list',
+          children: petChildren,
+        },
+        {
+          id: 'interact',
+          label: ctx.i18n.t('composerActions.pet-toggle.interact'),
+          iconName: 'sparkles',
+          children: [
+            { id: 'interact:waving', label: ctx.i18n.t('composerActions.pet-toggle.wave') },
+            { id: 'interact:jumping', label: ctx.i18n.t('composerActions.pet-toggle.jump') },
+          ],
+        },
+        {
+          id: 'install',
+          label: ctx.i18n.t('composerActions.pet-toggle.addPet'),
+          iconName: 'plus',
+          separator: true,
+        },
+      ];
+    },
+    async execute(_context, itemId, actions) {
+      if (itemId === 'visibility:hide') {
         await setVisiblePreference(false);
         close();
-      } else {
+      } else if (itemId === 'visibility:show') {
         try {
           await showPet();
         } catch (err) {
           if (!(err instanceof NoAvailablePetError)) throw err;
-          const result = await ctx.ui.showToast({
-            title: ctx.i18n.t('composerActions.pet-toggle.noPetTitle'),
-            description: ctx.i18n.t('composerActions.pet-toggle.noPetDescription'),
-            variant: 'warning',
-            action: { label: ctx.i18n.t('composerActions.pet-toggle.install') },
-          });
-          if (result.action === 'action') {
-            await actions.composer.fill(ctx.i18n.t('composerActions.pet-toggle.installPrompt'));
-          }
-          return;
+          await showNoPetToast(actions);
         }
+      } else if (itemId.startsWith('select:') && itemId !== 'select:none') {
+        const name = itemId.slice('select:'.length);
+        const pet = (await library.listPets()).find((item) => item.name === name && item.health !== 'missing' && item.health !== 'invalid');
+        if (!pet) throw new Error(`pet is unavailable: ${name}`);
+        await selectInstalledPet(pet);
+      } else if (itemId === 'interact:waving' || itemId === 'interact:jumping') {
+        const state = itemId === 'interact:waving' ? 'waving' : 'jumping';
+        await postToPet({ type: 'setState', state, playMode: 'once', transientMs: 0 });
+      } else if (itemId === 'install') {
+        await actions.composer.fill(ctx.i18n.t('composerActions.pet-toggle.installPrompt'));
       }
-      // 点击后立即重新读取状态，更新按钮的文案和激活态。
       petToggleAction.notifyUpdate();
     },
   });

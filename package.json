@@ -54,7 +54,13 @@
         {
           "id": "pet-toggle",
           "icon": "ext:finch-pet/action",
-          "tooltip": "Show or hide desktop pet"
+          "tooltip": "Control desktop pet"
+        }
+      ],
+      "mcpServers": [
+        {
+          "name": "finch-pet",
+          "description": "Manage the local Finch Pet library. Tools are discovered lazily through MCP."
         }
       ],
       "iconPacks": [
@@ -82,7 +88,7 @@
     }
   },
   "devDependencies": {
-    "@finchtoys/minitool-api": "^0.1.16",
+    "@finchtoys/minitool-api": "^0.1.17",
     "@types/node": "^26.1.0",
     "esbuild": "^0.28.1",
     "fflate": "^0.8.3",
