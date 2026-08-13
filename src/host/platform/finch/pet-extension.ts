@@ -6,23 +6,25 @@
  * - pet-library.ts  宠物目录列举/解析/PetRecord 组装/宠物包加载
  * - importers.ts    五种导入渠道 + 原子安装
  * - runtime-status.ts 会话运行时状态机(Agent 事件 → 宠物状态/气泡)
- * - canvas/         Canvas 段源码(构建产物为根目录 pet-canvas.js)
+ * - src/game/       纯 ctx2d 游戏运行时(构建产物为根目录 pet-canvas.js)
  */
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type * as finch from 'finch';
-import { isCanvasToHostMessage, PET_STATES, parsePetState, type CanvasStrings, type HostToCanvasMessage } from './protocol.js';
-import type { WindowPosition } from './types.js';
-import { safePetName } from './utils.js';
-import { exists } from './pet-package.js';
-import { PetRegistryStore } from './registry.js';
-import { DuplicatePetIdError, NoAvailablePetError } from './errors.js';
-import { createPetLibrary } from './pet-library.js';
-import { createPetImporters, type ImportPetResult } from './importers.js';
-import { createPetRuntimeStatus } from './runtime-status.js';
-import { createPetManagementIpcServer, type PetManagementHandlers } from './management-ipc.js';
+import { isCanvasToHostMessage, PET_STATES, parsePetState, type CanvasStrings, type HostToCanvasMessage } from '../../../shared/protocol.js';
+import type { WindowPosition } from '../../domain/types.js';
+import { safePetName } from '../../domain/utils.js';
+import { exists } from '../../infrastructure/pet-package.js';
+import { PetRegistryStore } from '../../infrastructure/persistence/pet-registry.js';
+import { DuplicatePetIdError, NoAvailablePetError } from '../../domain/errors.js';
+import { createPetLibrary } from '../../application/pet-library.js';
+import { createPetImporters, type ImportPetResult } from '../../application/importers.js';
+import { createPetRuntimeStatus } from '../../application/runtime-status.js';
+import { createPetManagementIpcServer, type PetManagementHandlers } from '../../infrastructure/ipc/management-ipc.js';
+import { PetVisibilityController } from '../../application/visibility-controller.js';
+import { CanvasWindowCoordinator } from '../../application/window-coordinator.js';
 
 interface McpClientCapability {
   registerServer(input: {
@@ -83,7 +85,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
   const gameCanvasHeight = 696;
   const rightAlignedPetCenterX = 240;
   const legacyCanvasWidth = 240;
-  let petWindow: finch.CanvasWindow | undefined;
+  const windows = new CanvasWindowCoordinator();
   let petToggleAction: (finch.Disposable & { notifyUpdate(): void }) | undefined;
   let settingsMenu: (finch.Disposable & { notifyUpdate(): void }) | undefined;
   let gameActive = false;
@@ -134,12 +136,16 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
 
   const library = createPetLibrary({ ctx, builtinPetsRoot, customPetsRoot, registry });
 
-  const isVisibleOnStartup = async () => await ctx.storage.get<boolean>('window.visible') !== false;
-  const setVisiblePreference = async (visible: boolean) => { await ctx.storage.set('window.visible', visible); };
+  const notifyControlState = () => {
+    petToggleAction?.notifyUpdate();
+    settingsMenu?.notifyUpdate();
+  };
+
+  const visibility = new PetVisibilityController(ctx.storage, notifyControlState);
 
   const runtime = createPetRuntimeStatus(ctx, {
-    hasWindow: () => !!petWindow,
-    post: async (message) => { if (petWindow) await petWindow.postMessage(message); },
+    hasWindow: () => !!windows.current,
+    post: async (message) => { if (windows.current) await windows.current.postMessage(message); },
   });
 
   const clearPositionSaveTimer = () => {
@@ -168,12 +174,11 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     gameWindowPosition = undefined;
     runtime.resetForClose();
     clearPositionSaveTimer();
-    petWindow?.dispose();
-    petWindow = undefined;
+    windows.disposeCurrent();
+    notifyControlState();
   };
 
-  const open = async () => {
-    if (petWindow) { petWindow.show(); return petWindow; }
+  const createWindow = async () => {
     const saved = await ctx.storage.get<WindowPosition>('window.position');
     const savedCanvasWidth = await ctx.storage.get<number>('window.canvasWidth');
     const previousCanvasWidth = typeof savedCanvasWidth === 'number' ? savedCanvasWidth : legacyCanvasWidth;
@@ -190,7 +195,9 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     windowPosition = typeof migratedX === 'number' && typeof migratedY === 'number'
       ? { x: migratedX, y: migratedY }
       : undefined;
-    petWindow = ctx.ui.createCanvasWindow({
+    if (!visibility.snapshot.desired) throw new Error('pet window opening was cancelled');
+
+    const createdWindow = ctx.ui.createCanvasWindow({
       entry: 'pet-canvas.js',
       width: canvasWidth,
       height: expandedCanvasHeight,
@@ -220,7 +227,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
         layout: { expandedHeight: expandedCanvasHeight, petCenterX: rightAlignedPetCenterX },
       },
     });
-    petWindow.onDidReceiveMessage((msg) => {
+    createdWindow.onDidReceiveMessage((msg) => {
       if (!isCanvasToHostMessage(msg)) return;
       const event = msg;
       if ((event?.type === 'bubbleAction' || event?.type === 'openBubbleSession') && event.sessionId) {
@@ -237,16 +244,16 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
         void enterGame(
           { x: event.originalX, y: event.originalY },
           { x: event.centeredX, y: event.centeredY },
+          event.appId,
         );
       } else if (event?.type === 'exitGame') {
         void exitGame({ x: event.x, y: event.y });
       } else if (event?.type === 'exitPet') {
-        void setVisiblePreference(false);
-        close();
+        void hidePet().catch((err: unknown) => ctx.logger.warn('hide pet from context menu failed', err instanceof Error ? err.message : String(err)));
       }
     });
     await ctx.storage.set('window.canvasWidth', canvasWidth);
-    petWindow.onDidMove((pos) => {
+    createdWindow.onDidMove((pos) => {
       if (gameActive || gameTransitioning) {
         gameWindowPosition = pos;
         return;
@@ -254,14 +261,16 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       windowPosition = pos;
       schedulePositionSave();
     });
-    petWindow.onDidResize((size) => {
+    createdWindow.onDidResize((size) => {
       if (gameActive || gameTransitioning) return;
       canvasHeight = size.height;
       schedulePositionSave();
     });
-    petWindow.onDidDispose(() => {
+    createdWindow.onDidDispose(() => {
+      // close/reopen 期间旧窗口的 dispose 事件可能晚到，只允许当前窗口改状态。
+      if (!windows.release(createdWindow)) return;
       clearPositionSaveTimer();
-      petWindow = undefined;
+      void visibility.set(false);
       transitionGeneration += 1;
       gameTransitioning = false;
       gameActive = false;
@@ -271,18 +280,31 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       canvasHeight = expandedCanvasHeight;
       petCenterX = rightAlignedPetCenterX;
       runtime.resetForWindowDisposed();
+      notifyControlState();
     });
     runtime.prepareForWindowOpen();
     void ctx.status.get().then(runtime.applyRuntimeStatus).catch((err: unknown) => ctx.logger.warn('sync pet runtime status failed', err instanceof Error ? err.message : String(err)));
-    return petWindow;
+    return createdWindow;
+  };
+
+  const open = async () => {
+    if (!visibility.snapshot.desired) throw new Error('pet window opening was cancelled');
+    if (windows.current) {
+      windows.current.show();
+      notifyControlState();
+      return windows.current;
+    }
+    const created = await windows.ensure(createWindow);
+    notifyControlState();
+    return created;
   };
 
   const waitForTransition = async (durationMs: number) => {
-    const win = petWindow;
+    const win = windows.current;
     if (!win) return false;
     const generation = ++transitionGeneration;
     await new Promise<void>((resolve) => setTimeout(resolve, durationMs));
-    return !!petWindow && petWindow === win && generation === transitionGeneration;
+    return !!windows.current && windows.current === win && generation === transitionGeneration;
   };
 
   const runVisualTransition = async (input: {
@@ -292,17 +314,17 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     toScale: number;
     durationMs: number;
   }) => {
-    if (!petWindow) return false;
-    await petWindow.postMessage({ type: 'visualTransition', ...input });
+    if (!windows.current) return false;
+    await windows.current.postMessage({ type: 'visualTransition', ...input });
     return waitForTransition(input.durationMs);
   };
 
-  const enterGame = async (originalPosition: WindowPosition, centeredPosition: WindowPosition) => {
-    if (!petWindow || gameActive || gameTransitioning) return;
+  const enterGame = async (originalPosition: WindowPosition, centeredPosition: WindowPosition, appId = 'flappy-bird') => {
+    if (!windows.current || gameActive || gameTransitioning) return;
     preGamePosition = { ...originalPosition };
     gameWindowPosition = { ...originalPosition };
     gameTransitioning = true;
-    petWindow.setClickThrough(false);
+    windows.current.setClickThrough(false);
     const petHidden = await runVisualTransition({
       fromOpacity: 1,
       toOpacity: 0,
@@ -310,22 +332,24 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       toScale: 1,
       durationMs: 150,
     });
-    if (!petHidden || !petWindow) {
+    if (!petHidden || !windows.current) {
       gameTransitioning = false;
       return;
     }
     gameActive = true;
     // 同一个 CanvasWindow 在游戏态降低到 macOS normal 层级。
-    petWindow.setAlwaysOnTop(true, 'normal');
-    petWindow.setSize(gameCanvasWidth, gameCanvasHeight);
-    petWindow.setPosition(centeredPosition.x, centeredPosition.y);
+    windows.current.setAlwaysOnTop(true, 'normal');
+    windows.current.setSize(gameCanvasWidth, gameCanvasHeight);
+    windows.current.setPosition(centeredPosition.x, centeredPosition.y);
     let soundUrls: Awaited<ReturnType<typeof loadOriginalSoundUrls>> = {};
-    try {
-      soundUrls = await loadOriginalSoundUrls();
-    } catch (err) {
-      ctx.logger.warn('load bundled Flappy Bird audio failed', err instanceof Error ? err.message : String(err));
+    if (appId === 'flappy-bird') {
+      try {
+        soundUrls = await loadOriginalSoundUrls();
+      } catch (err) {
+        ctx.logger.warn('load bundled Flappy Bird audio failed', err instanceof Error ? err.message : String(err));
+      }
     }
-    await petWindow.postMessage({ type: 'gameMode', active: true, soundUrls });
+    await windows.current.postMessage({ type: 'gameMode', active: true, appId, soundUrls });
     const completed = await runVisualTransition({
       fromOpacity: 0,
       toOpacity: 1,
@@ -335,12 +359,11 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     });
     if (completed) gameWindowPosition = { ...centeredPosition };
     gameTransitioning = false;
-    petToggleAction?.notifyUpdate();
-    settingsMenu?.notifyUpdate();
+    notifyControlState();
   };
 
   const exitGame = async (currentPosition?: WindowPosition) => {
-    if (!petWindow || !gameActive || gameTransitioning || !preGamePosition) return;
+    if (!windows.current || !gameActive || gameTransitioning || !preGamePosition) return;
     gameTransitioning = true;
     gameWindowPosition = currentPosition || gameWindowPosition;
     const destination = preGamePosition;
@@ -351,20 +374,20 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       toScale: 0.82,
       durationMs: 160,
     });
-    if (!gameHidden || !petWindow) {
+    if (!gameHidden || !windows.current) {
       gameTransitioning = false;
       return;
     }
-    petWindow.setSize(canvasWidth, expandedCanvasHeight);
-    petWindow.setPosition(destination.x, destination.y);
+    windows.current.setSize(canvasWidth, expandedCanvasHeight);
+    windows.current.setPosition(destination.x, destination.y);
     // 回到桌宠态时恢复 macOS floating 层级。
-    petWindow.setAlwaysOnTop(true, 'floating');
+    windows.current.setAlwaysOnTop(true, 'floating');
     gameActive = false;
     windowPosition = { ...destination };
     preGamePosition = undefined;
     gameWindowPosition = undefined;
     canvasHeight = expandedCanvasHeight;
-    await petWindow.postMessage({ type: 'gameMode', active: false });
+    await windows.current.postMessage({ type: 'gameMode', active: false });
     await runVisualTransition({
       fromOpacity: 0,
       toOpacity: 1,
@@ -373,12 +396,31 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       durationMs: 190,
     });
     gameTransitioning = false;
-    petToggleAction?.notifyUpdate();
-    settingsMenu?.notifyUpdate();
+    notifyControlState();
   };
 
-  const reopenIfVisible = async () => { if (petWindow) { close(); await open(); } };
-  const showPet = async () => { await setVisiblePreference(true); return open(); };
+  const reopenIfVisible = async () => { if (windows.current) { close(); await open(); } };
+  const showPet = async () => {
+    const persistence = visibility.set(true);
+    const requestedRevision = visibility.snapshot.revision;
+    try {
+      const win = await open();
+      await persistence;
+      return win;
+    } catch (err) {
+      // 仅回滚本次显示请求，不能覆盖期间发生的更新操作。
+      if (visibility.isCurrent(requestedRevision)) {
+        await visibility.set(false);
+        close();
+      }
+      throw err;
+    }
+  };
+  const hidePet = async () => {
+    const persistence = visibility.set(false);
+    close();
+    await persistence;
+  };
   const postToPet = async (message: HostToCanvasMessage) => { const win = await showPet(); await win.postMessage(message); };
 
   const selectInstalledPet = async (pet: { name: string; displayName: string }): Promise<ImportPetResult> => {
@@ -399,6 +441,9 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     },
   });
 
+  const usablePets = async () => (await library.listPets())
+    .filter((pet) => pet.health === 'ok' || pet.health === 'external');
+  const hasUsablePet = async () => (await usablePets()).length > 0;
   const noAvailablePetMessage = () => ctx.i18n.t('pet.noAvailable');
 
   const managementHandlers: PetManagementHandlers = {
@@ -460,7 +505,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
         const nextPet = await library.getFallbackPetName();
         await ctx.storage.set('selectedPet', nextPet ?? '');
         if (nextPet) await reopenIfVisible();
-        else { await setVisiblePreference(false); close(); }
+        else await hidePet();
       }
       return { content: [{ type: 'text', text: `removed: ${name}` }] };
     },
@@ -487,7 +532,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       const result = await mcp.registerServer({
         name: serverName,
         command: process.execPath,
-        args: [join(ctx.minitool.extensionPath, 'dist', 'mcp-server.js')],
+        args: [join(ctx.minitool.extensionPath, 'dist', 'host', 'infrastructure', 'ipc', 'mcp-server.js')],
         cwd: ctx.minitool.extensionPath,
         description: 'Manage the local Finch Pet library. Tools are discovered lazily through MCP.',
         env: { ELECTRON_RUN_AS_NODE: '1' },
@@ -515,6 +560,16 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     },
   });
 
+  const applyConfiguredFirstPet = async () => {
+    const configured = ctx.settings.get<string>('firstPet')?.trim();
+    if (!configured) return;
+    const applied = await ctx.storage.get<string>('settings.firstPet.applied');
+    if (applied === configured && await library.findInstalledPetById(configured)) return;
+    await importers.importPetSource(`https://petdex.dev/pets/${encodeURIComponent(configured)}`);
+    await ctx.storage.set('settings.firstPet.applied', configured);
+    notifyControlState();
+  };
+
   const showNoPetToast = async (actions: finch.ComposerActionActions) => {
     const result = await ctx.ui.showToast({
       title: ctx.i18n.t('composerActions.pet-toggle.noPetTitle'),
@@ -527,11 +582,12 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
 
   petToggleAction = ctx.composerActions.register('pet-toggle', {
     async getBadge() {
-      return { text: 'Finch Pet', active: !!petWindow };
+      return { text: 'Finch Pet', active: visibility.snapshot.desired };
     },
     async getMenu() {
       const pets = await library.listPets();
-      const selectablePets = pets.filter((pet) => pet.health !== 'missing' && pet.health !== 'invalid');
+      const selectablePets = pets.filter((pet) => pet.health === 'ok' || pet.health === 'external');
+      const petReady = selectablePets.length > 0;
       const petChildren: finch.ComposerActionMenuItem[] = selectablePets.length
         ? selectablePets.map((pet) => ({
             id: `select:${pet.name}`,
@@ -544,9 +600,11 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
 
       return [
         {
-          id: petWindow ? 'visibility:hide' : 'visibility:show',
-          label: ctx.i18n.t(`composerActions.pet-toggle.${petWindow ? 'hidePet' : 'showPet'}`),
-          iconName: petWindow ? 'toggle-right' : 'toggle-left',
+          id: visibility.snapshot.desired ? 'visibility:hide' : 'visibility:show',
+          label: ctx.i18n.t(`composerActions.pet-toggle.${visibility.snapshot.desired ? 'hidePet' : 'showPet'}`),
+          iconName: visibility.snapshot.desired ? 'toggle-right' : 'toggle-left',
+          disabled: !visibility.snapshot.desired && !petReady,
+          description: !visibility.snapshot.desired && !petReady ? ctx.i18n.t('composerActions.pet-toggle.installFirst') : undefined,
         },
         {
           id: 'select-pet',
@@ -558,6 +616,8 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
           id: 'interact',
           label: ctx.i18n.t('composerActions.pet-toggle.interact'),
           iconName: 'sparkles',
+          disabled: !petReady,
+          description: !petReady ? ctx.i18n.t('composerActions.pet-toggle.installFirst') : undefined,
           children: [
             { id: 'interact:waving', label: ctx.i18n.t('composerActions.pet-toggle.wave') },
             { id: 'interact:jumping', label: ctx.i18n.t('composerActions.pet-toggle.jump') },
@@ -573,8 +633,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     },
     async execute(_context, itemId, actions) {
       if (itemId === 'visibility:hide') {
-        await setVisiblePreference(false);
-        close();
+        await hidePet();
       } else if (itemId === 'visibility:show') {
         try {
           await showPet();
@@ -599,17 +658,23 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
 
   settingsMenu = ctx.settingsMenu.register({
     async getMenu() {
+      const petReady = await hasUsablePet();
       return [
         {
           id: gameActive ? 'game:exit' : 'game:play',
           label: ctx.i18n.t(`settingsMenu.${gameActive ? 'exitGame' : 'playGame'}`),
           iconName: 'gamepad-2',
-          description: gameActive ? ctx.i18n.t('settingsMenu.playing') : undefined,
+          description: gameActive
+            ? ctx.i18n.t('settingsMenu.playing')
+            : !petReady ? ctx.i18n.t('settingsMenu.installFirst') : undefined,
+          disabled: !gameActive && !petReady,
         },
         {
-          id: petWindow ? 'pet:hide' : 'pet:show',
-          label: ctx.i18n.t(`settingsMenu.${petWindow ? 'hidePet' : 'showPet'}`),
-          iconName: petWindow ? 'toggle-right' : 'toggle-left',
+          id: visibility.snapshot.desired ? 'pet:hide' : 'pet:show',
+          label: ctx.i18n.t(`settingsMenu.${visibility.snapshot.desired ? 'hidePet' : 'showPet'}`),
+          iconName: visibility.snapshot.desired ? 'toggle-right' : 'toggle-left',
+          disabled: !visibility.snapshot.desired && !petReady,
+          description: !visibility.snapshot.desired && !petReady ? ctx.i18n.t('settingsMenu.installFirst') : undefined,
         },
       ];
     },
@@ -622,8 +687,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       } else if (itemId === 'pet:show') {
         await showPet();
       } else if (itemId === 'pet:hide') {
-        await setVisiblePreference(false);
-        close();
+        await hidePet();
       }
       petToggleAction?.notifyUpdate();
       settingsMenu?.notifyUpdate();
@@ -651,8 +715,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       async execute(input) {
         const args = input as { action?: unknown; state?: unknown; playMode?: unknown; message?: unknown };
         if (args.action === 'hide') {
-          await setVisiblePreference(false);
-          close();
+          await hidePet();
           return { content: [{ type: 'text', text: 'hidden' }] };
         }
         if (args.action === 'say') {
@@ -689,16 +752,22 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     }),
     ctx.i18n.onDidChangeLocale((locale) => {
       void runtime.refreshRuntimeLocale(locale).catch((err: unknown) => ctx.logger.warn('refresh pet locale failed', err instanceof Error ? err.message : String(err)));
-      if (petWindow) void petWindow.postMessage({ type: 'locale', strings: canvasStrings() });
+      if (windows.current) void windows.current.postMessage({ type: 'locale', strings: canvasStrings() });
       petToggleAction?.notifyUpdate();
       settingsMenu?.notifyUpdate();
     }),
     { dispose: close },
   );
 
-  void isVisibleOnStartup().then((visible) => {
-    if (visible) void open();
-  }).catch((err) => {
-    ctx.logger.warn('auto show pet failed', err instanceof Error ? err.message : String(err));
+  void (async () => {
+    await applyConfiguredFirstPet().catch((err: unknown) => {
+      ctx.logger.warn('install configured first pet failed', err instanceof Error ? err.message : String(err));
+    });
+    const petReady = await hasUsablePet();
+    const visible = await visibility.restore(petReady);
+    if (visible) await open();
+  })().catch((err) => {
+    void visibility.set(false);
+    ctx.logger.warn('initialize pet failed', err instanceof Error ? err.message : String(err));
   });
 }

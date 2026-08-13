@@ -8,5 +8,5 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": []
   },
-  "include": ["canvas"]
+  "include": ["src/game", "src/shared"]
 }

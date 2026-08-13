@@ -8,11 +8,11 @@
 import { mkdir, readdir, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type * as finch from 'finch';
-import type { PetFolder, PetHealth, PetKind, PetRecord, PetRegistry, PetRegistryEntry } from './types.js';
-import { displayNameOf, safePetName } from './utils.js';
-import { findSpritesheet, makeIdlePreviewSvgData, mimeFromPath, readPetJson } from './pet-package.js';
-import type { PetRegistryStore } from './registry.js';
-import { DuplicatePetIdError, NoAvailablePetError } from './errors.js';
+import type { PetFolder, PetHealth, PetKind, PetRecord, PetRegistry, PetRegistryEntry } from '../domain/types.js';
+import { displayNameOf, safePetName } from '../domain/utils.js';
+import { findSpritesheet, makeIdlePreviewSvgData, mimeFromPath, readPetJson } from '../infrastructure/pet-package.js';
+import type { PetRegistryStore } from '../infrastructure/persistence/pet-registry.js';
+import { DuplicatePetIdError, NoAvailablePetError } from '../domain/errors.js';
 
 export interface PetLibraryDeps {
   ctx: finch.MiniToolContext;

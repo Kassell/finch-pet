@@ -1,5 +1,5 @@
-export { PET_STATES, parsePetState } from './protocol.js';
-export type { PetState } from './protocol.js';
+export { PET_STATES, parsePetState } from '../../shared/protocol.js';
+export type { PetState } from '../../shared/protocol.js';
 export type PetKind = 'builtin' | 'custom';
 export type PetSourceType = 'builtin' | 'petdex-url' | 'remote-image' | 'local-image' | 'local-folder' | 'local-zip' | 'external';
 export type PetHealth = 'ok' | 'external' | 'missing' | 'invalid';

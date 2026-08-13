@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { PetRegistry, PetRegistryEntry } from './types.js';
-import { isRecord, safePetName } from './utils.js';
+import type { PetRegistry, PetRegistryEntry } from '../../domain/types.js';
+import { isRecord, safePetName } from '../../domain/utils.js';
 
 export class PetRegistryStore {
   readonly path: string;

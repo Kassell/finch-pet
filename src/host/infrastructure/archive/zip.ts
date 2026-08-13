@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { unzipSync } from 'fflate';
-import type { ZipEntry } from '../types.js';
+import type { ZipEntry } from '../../domain/types.js';
 
 export function normalizeZipPath(value: string): string | undefined {
   const normalized = value.replace(/\\/g, '/').replace(/^\.\//, '');

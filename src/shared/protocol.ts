@@ -69,6 +69,7 @@ export type HostToCanvasMessage =
   | {
       type: 'gameMode';
       active: boolean;
+      appId?: string;
       soundUrls?: Partial<Record<'die' | 'hit' | 'point' | 'swoosh' | 'wing', string>>;
     }
   | { type: 'prepareGame' }
@@ -90,6 +91,7 @@ export type CanvasToHostMessage =
   | { type: 'openBubbleSession'; sessionId: string }
   | {
       type: 'enterGame';
+      appId: string;
       originalX: number;
       originalY: number;
       centeredX: number;
@@ -150,7 +152,9 @@ export function isHostToCanvasMessage(value: unknown): value is HostToCanvasMess
     case 'config':
       return isOptionalNumber(value.scale);
     case 'gameMode':
-      return typeof value.active === 'boolean' && isOptionalStringRecord(value.soundUrls);
+      return typeof value.active === 'boolean'
+        && isOptionalString(value.appId)
+        && isOptionalStringRecord(value.soundUrls);
     case 'prepareGame':
       return true;
     case 'locale':
@@ -179,7 +183,8 @@ export function isCanvasToHostMessage(value: unknown): value is CanvasToHostMess
     case 'openBubbleSession':
       return typeof value.sessionId === 'string';
     case 'enterGame':
-      return typeof value.originalX === 'number'
+      return typeof value.appId === 'string'
+        && typeof value.originalX === 'number'
         && typeof value.originalY === 'number'
         && typeof value.centeredX === 'number'
         && typeof value.centeredY === 'number';

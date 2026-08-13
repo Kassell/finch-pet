@@ -9,7 +9,7 @@
  * 某些动作行可能少于 8 个有效帧,后面的格子是透明空帧,
  * 所以加载图片后扫描每一行动作的有效帧数,避免动画循环到空帧时闪烁。
  */
-import type { PetState } from "../src/protocol.js";
+import type { PetState } from "../../../shared/protocol.js";
 
 export const BASE_FRAME_WIDTH = 192;
 export const BASE_FRAME_HEIGHT = 208;

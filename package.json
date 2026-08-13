@@ -15,9 +15,11 @@
   "license": "MIT",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build:zip && npm run build:canvas",
-    "build:zip": "esbuild src/lib/zip.ts --bundle --platform=node --format=esm --target=node20 --charset=utf8 --outfile=dist/lib/zip.js",
-    "build:canvas": "tsc -p tsconfig.canvas.json && esbuild canvas/main.ts --bundle --format=iife --charset=utf8 --outfile=pet-canvas.js --banner:js=\"/* 本文件由 canvas/ 目录源码构建生成,请勿直接编辑;运行 npm run build:canvas 重新生成。 */\"",
+    "build": "tsc -p tsconfig.json && npm run build:zip && npm run build:game-core && npm run build:canvas",
+    "build:zip": "esbuild src/host/infrastructure/archive/zip.ts --bundle --platform=node --format=esm --target=node20 --charset=utf8 --outfile=dist/host/infrastructure/archive/zip.js",
+    "build:game-core": "esbuild src/game/core/game.ts src/game/core/app-registry.ts src/game/pet/systems/pet-animation-system.ts src/game/pet/systems/pet-bubble-system.ts --bundle --platform=node --format=esm --target=node20 --charset=utf8 --outbase=src --outdir=dist",
+    "build:canvas": "tsc -p tsconfig.canvas.json && esbuild src/game/main.ts --bundle --format=iife --charset=utf8 --outfile=pet-canvas.js --banner:js=\"/* 本文件由 src/game 源码构建生成,请勿直接编辑;运行 npm run build:canvas 重新生成。 */\"",
+    "test": "npm run build && node --test test/*.test.mjs",
     "dev": "tsc -p tsconfig.json --watch"
   },
   "finch": {
@@ -80,6 +82,50 @@
         "mcp.client"
       ]
     },
+    "settings": {
+      "fields": [
+        {
+          "key": "firstPet",
+          "label": "Choose your first pet",
+          "type": "select",
+          "description": "Preview pets on Petdex, then save to install and select one.",
+          "default": "",
+          "options": [
+            {
+              "value": "",
+              "label": "Choose later"
+            },
+            {
+              "value": "boba",
+              "label": "Boba · cozy otter"
+            },
+            {
+              "value": "doraemon",
+              "label": "Doraemon · robot cat"
+            },
+            {
+              "value": "tiko",
+              "label": "Tiko · utility robot"
+            },
+            {
+              "value": "lulu-capybara-2",
+              "label": "噜噜 · capybara"
+            },
+            {
+              "value": "noir-webling",
+              "label": "Noir Webling · detective spider"
+            }
+          ]
+        },
+        {
+          "key": "petdexPreview",
+          "label": "Preview animated pets on Petdex",
+          "type": "link",
+          "href": "https://petdex.dev/#gallery",
+          "description": "Browse the full gallery before choosing."
+        }
+      ]
+    },
     "extensionType": "community",
     "categories": [
       "productivity"
@@ -110,6 +156,9 @@
     "README.md",
     "README.en-US.md",
     "README.zh-CN.md",
+    "ARCHITECTURE.md",
+    "FINCH-CANVAS-API-REQUESTS.md",
+    "CANVAS-WINDOW-SERVICE-HANDOFF.md",
     "package.json"
   ]
 }

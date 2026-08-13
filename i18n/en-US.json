@@ -10,10 +10,29 @@
       "tooltip": "Pet and game controls"
     }
   },
+  "settings": {
+    "firstPet": {
+      "label": "Choose your first pet",
+      "description": "Preview it on Petdex, then save to install and select it.",
+      "options": {
+        "": "Choose later",
+        "boba": "Boba · cozy otter",
+        "doraemon": "Doraemon · robot cat",
+        "tiko": "Tiko · utility robot",
+        "lulu-capybara-2": "Lulu · capybara",
+        "noir-webling": "Noir Webling · detective spider"
+      }
+    },
+    "petdexPreview": {
+      "label": "Preview animated pets on Petdex",
+      "description": "Browse the full pet gallery."
+    }
+  },
   "settingsMenu": {
     "playGame": "Play Flappy Bird",
     "exitGame": "Exit game",
     "playing": "Playing",
+    "installFirst": "Add a pet first",
     "showPet": "Show pet",
     "hidePet": "Hide pet"
   },
@@ -53,6 +72,7 @@
       "builtin": "Built-in",
       "custom": "Custom",
       "noPets": "No available pets",
+      "installFirst": "Add a pet first",
       "noPetTitle": "No pet is ready to display",
       "noPetDescription": "Install a desktop pet from Petdex first.",
       "install": "Install",

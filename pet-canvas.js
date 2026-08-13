@@ -1,7 +1,7 @@
-/* 本文件由 canvas/ 目录源码构建生成,请勿直接编辑;运行 npm run build:canvas 重新生成。 */
+/* 本文件由 src/game 源码构建生成,请勿直接编辑;运行 npm run build:canvas 重新生成。 */
 "use strict";
 (() => {
-  // src/protocol.ts
+  // src/shared/protocol.ts
   var PET_STATES = [
     "idle",
     "running-right",
@@ -38,7 +38,7 @@
       case "config":
         return isOptionalNumber(value.scale);
       case "gameMode":
-        return typeof value.active === "boolean" && isOptionalStringRecord(value.soundUrls);
+        return typeof value.active === "boolean" && isOptionalString(value.appId) && isOptionalStringRecord(value.soundUrls);
       case "prepareGame":
         return true;
       case "locale":
@@ -50,439 +50,197 @@
     }
   }
 
-  // canvas/sprite.ts
-  var BASE_FRAME_WIDTH = 192;
-  var BASE_FRAME_HEIGHT = 208;
-  var COLUMNS = 8;
-  var ROWS = 9;
-  var STATES = {
-    idle: { row: 0 },
-    "running-right": { row: 1 },
-    "running-left": { row: 2 },
-    waving: { row: 3 },
-    jumping: { row: 4 },
-    failed: { row: 5 },
-    waiting: { row: 6 },
-    running: { row: 7 },
-    review: { row: 8 }
-  };
-  var STATE_NAMES = new Set(Object.keys(STATES));
-  function normalizeState(value) {
-    if (typeof value !== "string") return "idle";
-    const state = value.trim().toLowerCase();
-    return STATE_NAMES.has(state) ? state : "idle";
-  }
-  function spriteFrameSize(image) {
-    const sourceWidth = image.naturalWidth || image.width || COLUMNS * BASE_FRAME_WIDTH;
-    const sourceHeight = image.naturalHeight || image.height || ROWS * BASE_FRAME_HEIGHT;
-    return {
-      width: sourceWidth / COLUMNS,
-      height: sourceHeight / ROWS
-    };
-  }
-  function frameHasVisiblePixels(image, row, column) {
-    const frame = spriteFrameSize(image);
-    const canvas = document.createElement("canvas");
-    canvas.width = BASE_FRAME_WIDTH;
-    canvas.height = BASE_FRAME_HEIGHT;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return true;
-    ctx.clearRect(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
-    ctx.drawImage(
-      image,
-      column * frame.width,
-      row * frame.height,
-      frame.width,
-      frame.height,
-      0,
-      0,
-      BASE_FRAME_WIDTH,
-      BASE_FRAME_HEIGHT
-    );
-    const pixels = ctx.getImageData(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT).data;
-    for (let i = 3; i < pixels.length; i += 4) {
-      if (pixels[i] > 8) return true;
+  // src/game/core/app-registry.ts
+  var AppRegistry = class {
+    apps = /* @__PURE__ */ new Map();
+    register(definition) {
+      const id = definition.id.trim();
+      if (!id) throw new Error("app id is required");
+      if (id === "pet") throw new Error("pet is a runtime scene, not an app");
+      if (this.apps.has(id)) throw new Error(`app is already registered: ${id}`);
+      this.apps.set(id, definition);
+      return this;
     }
-    return false;
-  }
-  function detectFrameCounts(image) {
-    const counts = Array.from({ length: ROWS }, () => COLUMNS);
-    try {
-      for (let row = 0; row < ROWS; row += 1) {
-        let lastVisible = -1;
-        for (let column = 0; column < COLUMNS; column += 1) {
-          if (frameHasVisiblePixels(image, row, column)) lastVisible = column;
-        }
-        counts[row] = Math.max(1, lastVisible + 1);
-      }
-    } catch {
-      return Array.from({ length: ROWS }, () => COLUMNS);
+    install(game2) {
+      for (const app of this.apps.values()) game2.register(app.id, app.create);
     }
-    return counts;
-  }
-  function detectVisibleContentBoundsByRow(image, frameCounts) {
-    const fallback = () => ({ x: 0, y: 0, width: BASE_FRAME_WIDTH, height: BASE_FRAME_HEIGHT });
-    const frame = spriteFrameSize(image);
-    const canvas = document.createElement("canvas");
-    canvas.width = BASE_FRAME_WIDTH;
-    canvas.height = BASE_FRAME_HEIGHT;
-    const c = canvas.getContext("2d", { willReadFrequently: true });
-    if (!c) return Array.from({ length: ROWS }, fallback);
-    const bounds = [];
-    try {
-      for (let row = 0; row < ROWS; row += 1) {
-        let minX = BASE_FRAME_WIDTH;
-        let minY = BASE_FRAME_HEIGHT;
-        let maxX = -1;
-        let maxY = -1;
-        const count = Math.max(1, Math.min(COLUMNS, frameCounts[row] || COLUMNS));
-        for (let column = 0; column < count; column += 1) {
-          c.clearRect(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
-          c.drawImage(
-            image,
-            column * frame.width,
-            row * frame.height,
-            frame.width,
-            frame.height,
-            0,
-            0,
-            BASE_FRAME_WIDTH,
-            BASE_FRAME_HEIGHT
-          );
-          const pixels = c.getImageData(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT).data;
-          for (let y = 0; y < BASE_FRAME_HEIGHT; y += 1) {
-            for (let x = 0; x < BASE_FRAME_WIDTH; x += 1) {
-              if (pixels[(y * BASE_FRAME_WIDTH + x) * 4 + 3] <= 8) continue;
-              minX = Math.min(minX, x);
-              minY = Math.min(minY, y);
-              maxX = Math.max(maxX, x);
-              maxY = Math.max(maxY, y);
-            }
-          }
-        }
-        bounds[row] = maxX < minX || maxY < minY ? fallback() : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-      }
-    } catch {
-      return Array.from({ length: ROWS }, fallback);
+    has(id) {
+      return this.apps.has(id);
     }
-    return bounds;
-  }
-
-  // canvas/bubble.ts
-  var TOP_BUBBLE_MAX_RISE = 96;
-  var PLACEMENT_HYSTERESIS = 16;
-  var BUBBLE_FONT = '13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
-  var BUBBLE_ACTION_FONT = '12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
-  function chooseBubblePlacement(args) {
-    const currentOnRight = args.current === "top-right" || args.current === "side-right";
-    const currentOnSide = args.current === "side-left" || args.current === "side-right";
-    const midX = args.displayLeft + args.displayWidth / 2;
-    const placeOnRight = currentOnRight ? args.petCenterX < midX + PLACEMENT_HYSTERESIS : args.petCenterX < midX - PLACEMENT_HYSTERESIS;
-    const clearance = args.petTopY - args.topBoundary;
-    const nearTop = currentOnSide ? clearance < TOP_BUBBLE_MAX_RISE + PLACEMENT_HYSTERESIS : clearance < TOP_BUBBLE_MAX_RISE - PLACEMENT_HYSTERESIS;
-    if (!nearTop) return placeOnRight ? "top-right" : "top-left";
-    return placeOnRight ? "side-right" : "side-left";
-  }
-  function layoutBubble(params) {
-    const { measure: c, text, placement, pet, canvasWidth: w, canvasHeight: h, action } = params;
-    c.font = BUBBLE_FONT;
-    const paddingX = 12;
-    const lineHeight = 17;
-    const actionLabel = action?.label || "";
-    const hasAction = !!action && !!actionLabel;
-    let actionW = 0;
-    if (hasAction) {
-      const previousFont = c.font;
-      c.font = BUBBLE_ACTION_FONT;
-      actionW = Math.max(52, c.measureText(actionLabel).width + 18);
-      c.font = previousFont;
-    }
-    const tailSize = 8;
-    const sideRight = placement === "side-right";
-    const sideLeft = placement === "side-left";
-    const topRight = placement === "top-right";
-    const sidePlacement = sideRight || sideLeft;
-    const bubbleGap = 6;
-    const bubbleLeft = sideRight ? Math.max(102, Math.min(w - 108, pet.x + pet.drawW + bubbleGap)) : topRight ? Math.max(102, Math.min(w - 108, pet.x + pet.drawW * 0.52)) : 0;
-    const bubbleRight = sideLeft ? Math.max(108, Math.min(w - 102, pet.x - bubbleGap)) : topRight ? 0 : Math.max(108, Math.min(w - 102, pet.x + pet.drawW * 0.48));
-    const availableBoxW = sideRight || topRight ? w - bubbleLeft - 12 : bubbleRight - 12;
-    const maxBoxW = Math.min(hasAction ? 240 : 220, availableBoxW);
-    const minBoxW = Math.min(maxBoxW, hasAction ? 150 : 88);
-    const boxW = Math.min(
-      Math.max(c.measureText(text).width + paddingX * 2, minBoxW),
-      maxBoxW
-    );
-    const textMaxW = boxW - paddingX * 2;
-    const lines = [];
-    let line = "";
-    let truncated = false;
-    for (let index = 0; index < text.length; index += 1) {
-      const char = text[index];
-      const candidate = line + char;
-      if (char !== "\n" && (line === "" || c.measureText(candidate).width <= textMaxW)) {
-        line = candidate;
-        continue;
-      }
-      if (line) lines.push(line);
-      line = char === "\n" ? "" : char;
-      if (lines.length === 3) {
-        truncated = index < text.length;
-        break;
-      }
-    }
-    if (lines.length < 3 && line) lines.push(line);
-    if (!lines.length) lines.push("");
-    if (truncated) {
-      let last = lines[lines.length - 1];
-      while (last.length > 1 && c.measureText(`${last}…`).width > textMaxW) last = last.slice(0, -1);
-      lines[lines.length - 1] = `${last}…`;
-    }
-    const textAreaH = lines.length * lineHeight + 16;
-    const actionAreaH = hasAction ? 24 : 0;
-    const boxH = textAreaH + actionAreaH;
-    const verticalOffset = action ? 0 : pet.bounce;
-    const x = sideRight || topRight ? bubbleLeft : bubbleRight - boxW;
-    const boxRight = x + boxW;
-    let y;
-    let tailTipX;
-    let tailTipY;
-    if (sidePlacement) {
-      const sideAnchorY = pet.y + pet.drawH * 0.28;
-      y = Math.max(8, Math.min(h - boxH - 8, sideAnchorY - boxH / 2));
-      tailTipX = sideRight ? x - tailSize : boxRight + tailSize;
-      tailTipY = Math.max(y + 14, Math.min(y + boxH - 14, sideAnchorY));
-    } else {
-      const petBoxTop = h - pet.drawH - 14;
-      tailTipY = petBoxTop + 6 - Math.max(0, verticalOffset);
-      tailTipX = topRight ? x + 20 : boxRight - 20;
-      y = Math.max(8, tailTipY - tailSize - boxH);
-    }
-    const actionLayout = hasAction ? {
-      x: x + boxW - 10 - actionW,
-      y: y + textAreaH - 2,
-      width: actionW,
-      height: 22,
-      label: actionLabel
-    } : null;
-    return {
-      placement,
-      x,
-      y,
-      boxW,
-      boxH,
-      lines,
-      lineHeight,
-      paddingX,
-      textAreaH,
-      tailSize,
-      tailTipX,
-      tailTipY,
-      action: actionLayout
-    };
-  }
-
-  // canvas/draw.ts
-  function drawRoundRect(c, x, y, w, h, r) {
-    const radius = Math.min(r, w / 2, h / 2);
-    c.beginPath();
-    c.moveTo(x + radius, y);
-    c.lineTo(x + w - radius, y);
-    c.quadraticCurveTo(x + w, y, x + w, y + radius);
-    c.lineTo(x + w, y + h - radius);
-    c.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
-    c.lineTo(x + radius, y + h);
-    c.quadraticCurveTo(x, y + h, x, y + h - radius);
-    c.lineTo(x, y + radius);
-    c.quadraticCurveTo(x, y, x + radius, y);
-    c.closePath();
-  }
-  function drawPetFrame(c, args) {
-    c.save();
-    c.imageSmoothingEnabled = false;
-    c.drawImage(
-      args.image,
-      args.sx,
-      args.sy,
-      args.sourceW,
-      args.sourceH,
-      args.x,
-      args.y,
-      args.drawW,
-      args.drawH
-    );
-    c.restore();
-  }
-  function paintBubble(c, layout, buttonState) {
-    const { x, y, boxW, boxH, tailTipX, tailTipY, placement } = layout;
-    const boxRight = x + boxW;
-    c.save();
-    c.font = BUBBLE_FONT;
-    c.textBaseline = "middle";
-    c.shadowColor = "rgba(0,0,0,0.18)";
-    c.shadowBlur = 12;
-    c.fillStyle = "rgba(255,255,255,0.94)";
-    drawRoundRect(c, x, y, boxW, boxH, 14);
-    c.fill();
-    c.shadowColor = "transparent";
-    c.shadowBlur = 0;
-    c.beginPath();
-    if (placement === "side-right") {
-      c.moveTo(x + 1, tailTipY - 7);
-      c.lineTo(tailTipX, tailTipY);
-      c.lineTo(x + 1, tailTipY + 5);
-    } else if (placement === "side-left") {
-      c.moveTo(boxRight - 1, tailTipY - 7);
-      c.lineTo(tailTipX, tailTipY);
-      c.lineTo(boxRight - 1, tailTipY + 5);
-    } else if (placement === "top-right") {
-      c.moveTo(tailTipX - 3, y + boxH - 1);
-      c.lineTo(tailTipX, tailTipY);
-      c.lineTo(tailTipX + 9, y + boxH - 1);
-    } else {
-      c.moveTo(tailTipX - 9, y + boxH - 1);
-      c.lineTo(tailTipX, tailTipY);
-      c.lineTo(tailTipX + 3, y + boxH - 1);
-    }
-    c.closePath();
-    c.fill();
-    c.textAlign = "left";
-    c.fillStyle = "#3a2f0b";
-    layout.lines.forEach((text, index) => {
-      c.fillText(text, x + layout.paddingX, y + 8 + layout.lineHeight / 2 + index * layout.lineHeight);
-    });
-    if (layout.action) {
-      const action = layout.action;
-      c.fillStyle = buttonState.pressed ? "rgba(44,126,78,0.26)" : buttonState.hover ? "rgba(44,126,78,0.20)" : "rgba(44,126,78,0.14)";
-      drawRoundRect(c, action.x, action.y, action.width, action.height, 8);
-      c.fill();
-      c.font = BUBBLE_ACTION_FONT;
-      c.textAlign = "center";
-      c.textBaseline = "middle";
-      c.fillStyle = "#287a4b";
-      c.fillText(action.label, action.x + action.width / 2, action.y + action.height / 2);
-    }
-    c.restore();
-  }
-  function drawLoading(c, width, height, message) {
-    c.save();
-    c.fillStyle = "rgba(255,255,255,0.92)";
-    c.beginPath();
-    c.ellipse(width / 2, height / 2, 62, 42, 0, 0, Math.PI * 2);
-    c.fill();
-    c.fillStyle = "#3a2f0b";
-    c.font = BUBBLE_FONT;
-    c.textAlign = "center";
-    c.textBaseline = "middle";
-    c.fillText(message, width / 2, height / 2);
-    c.restore();
-  }
-
-  // canvas/context-menu.ts
-  var PetContextMenu = class {
-    constructor(onPlayGame, onExitPet, strings) {
-      this.onPlayGame = onPlayGame;
-      this.onExitPet = onExitPet;
-      this.strings = strings;
-    }
-    onPlayGame;
-    onExitPet;
-    strings;
-    element;
-    opened = false;
-    playItem;
-    closeItem;
-    get isOpen() {
-      return this.opened;
-    }
-    setStrings(strings) {
-      this.strings = strings;
-      if (this.playItem) this.playItem.textContent = strings.menuPlayGame;
-      if (this.closeItem) this.closeItem.textContent = strings.menuClosePet;
-    }
-    show(x, y) {
-      const menu = this.ensureElement();
-      menu.style.display = "block";
-      const rect = menu.getBoundingClientRect();
-      const edge = 8;
-      const pointerGap = 4;
-      const opensRight = x + pointerGap + rect.width <= window.innerWidth - edge || x - pointerGap - rect.width < edge;
-      const opensDown = y + pointerGap + rect.height <= window.innerHeight - edge || y - pointerGap - rect.height < edge;
-      const anchoredLeft = opensRight ? x + pointerGap : x - pointerGap - rect.width;
-      const anchoredTop = opensDown ? y + pointerGap : y - pointerGap - rect.height;
-      const left = Math.max(edge, Math.min(anchoredLeft, window.innerWidth - rect.width - edge));
-      const top = Math.max(edge, Math.min(anchoredTop, window.innerHeight - rect.height - edge));
-      menu.style.left = `${left}px`;
-      menu.style.top = `${top}px`;
-      this.opened = true;
-    }
-    hide() {
-      if (!this.element) return;
-      this.element.style.display = "none";
-      this.opened = false;
-    }
-    ensureElement() {
-      if (this.element) return this.element;
-      const menu = document.createElement("div");
-      menu.style.position = "fixed";
-      menu.style.zIndex = "2147483647";
-      menu.style.minWidth = "132px";
-      menu.style.padding = "6px";
-      menu.style.borderRadius = "12px";
-      menu.style.background = "rgba(255,255,255,0.96)";
-      menu.style.boxShadow = "0 12px 32px rgba(0,0,0,0.22)";
-      menu.style.border = "1px solid rgba(0,0,0,0.08)";
-      menu.style.backdropFilter = "blur(12px)";
-      menu.style.font = '13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
-      menu.style.color = "#231f20";
-      menu.style.display = "none";
-      menu.style.pointerEvents = "auto";
-      this.playItem = this.makeItem(this.strings.menuPlayGame, () => this.onPlayGame());
-      this.closeItem = this.makeItem(this.strings.menuClosePet, () => this.onExitPet());
-      menu.appendChild(this.playItem);
-      menu.appendChild(this.makeSeparator());
-      menu.appendChild(this.closeItem);
-      document.body.appendChild(menu);
-      this.element = menu;
-      return menu;
-    }
-    makeSeparator() {
-      const separator = document.createElement("div");
-      separator.style.height = "1px";
-      separator.style.margin = "5px 6px";
-      separator.style.background = "rgba(0,0,0,0.08)";
-      return separator;
-    }
-    makeItem(label, onClick) {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.textContent = label;
-      item.style.display = "block";
-      item.style.width = "100%";
-      item.style.border = "0";
-      item.style.borderRadius = "8px";
-      item.style.background = "transparent";
-      item.style.padding = "8px 10px";
-      item.style.textAlign = "left";
-      item.style.font = "inherit";
-      item.style.color = "inherit";
-      item.style.cursor = "default";
-      item.addEventListener("mouseenter", () => {
-        item.style.background = "rgba(0,0,0,0.07)";
-      });
-      item.addEventListener("mouseleave", () => {
-        item.style.background = "transparent";
-      });
-      item.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        this.hide();
-        onClick();
-      });
-      return item;
+    require(id) {
+      if (!this.has(id)) throw new Error(`app is not registered: ${id}`);
+      return id;
     }
   };
 
-  // canvas/flappy-bird.ts
+  // src/game/core/game.ts
+  var Game = class {
+    viewport;
+    initialData;
+    active;
+    activeId = "";
+    accumulator = 0;
+    fixedStepMs;
+    factories = /* @__PURE__ */ new Map();
+    scenes = /* @__PURE__ */ new Map();
+    constructor(options = {}) {
+      this.fixedStepMs = 1e3 / Math.max(1, options.updatesPerSecond ?? 60);
+    }
+    get currentSceneId() {
+      return this.activeId;
+    }
+    register(id, factory) {
+      if (!id.trim()) throw new Error("scene id is required");
+      if (this.factories.has(id)) throw new Error(`scene is already registered: ${id}`);
+      this.factories.set(id, factory);
+      return this;
+    }
+    init(args, initialScene) {
+      this.viewport = { canvas: args.canvas, context: args.ctx2d, width: args.width, height: args.height };
+      this.initialData = args.initialData;
+      this.switchScene(initialScene);
+    }
+    switchScene(id) {
+      if (this.activeId === id && this.active) return;
+      const previous = this.activeId || void 0;
+      this.active?.exit(id);
+      this.activeId = id;
+      this.accumulator = 0;
+      this.active = this.scene(id);
+      this.active.resize(this.viewport.width, this.viewport.height);
+      this.active.enter(previous);
+      this.active.render();
+    }
+    resize(width, height) {
+      this.viewport.width = width;
+      this.viewport.height = height;
+      this.active?.resize(width, height);
+      this.active?.render();
+    }
+    frame(dt) {
+      if (!this.active) return;
+      if (dt <= 0) {
+        this.active.render();
+        return;
+      }
+      this.accumulator += Math.min(dt, 250);
+      while (this.accumulator >= this.fixedStepMs) {
+        this.active.update(this.fixedStepMs);
+        this.accumulator -= this.fixedStepMs;
+      }
+      this.active.render();
+    }
+    pointer(event) {
+      this.active?.pointer(event);
+    }
+    contextMenu(x, y) {
+      return this.active?.contextMenu?.(x, y) ?? false;
+    }
+    message(message) {
+      this.active?.message(message);
+    }
+    keyDown(key) {
+      return this.active?.keyDown?.(key) ?? false;
+    }
+    blur() {
+      this.active?.blur?.();
+    }
+    dispose() {
+      for (const scene of this.scenes.values()) scene.dispose();
+      this.scenes.clear();
+      this.active = void 0;
+      this.activeId = "";
+      this.accumulator = 0;
+    }
+    scene(id) {
+      const existing = this.scenes.get(id);
+      if (existing) return existing;
+      const factory = this.factories.get(id);
+      if (!factory) throw new Error(`scene is not registered: ${id}`);
+      const scene = factory({ viewport: this.viewport, initialData: this.initialData, switchScene: (next) => this.switchScene(next) });
+      if (scene.id !== id) throw new Error(`scene id mismatch: expected ${id}, received ${scene.id}`);
+      this.scenes.set(id, scene);
+      return scene;
+    }
+  };
+
+  // src/game/input/dom-input.ts
+  var DomInputAdapter = class {
+    constructor(game2, canvas) {
+      this.game = game2;
+      this.canvas = canvas;
+    }
+    game;
+    canvas;
+    disposers = [];
+    attach() {
+      if (this.disposers.length) return;
+      const target = this.canvas || document.getElementById("finch-canvas") || window;
+      const listen = (node, type, listener, capture = true) => {
+        node.addEventListener(type, listener, capture);
+        this.disposers.push(() => node.removeEventListener(type, listener, capture));
+      };
+      const pointer = (type, event) => ({
+        type,
+        x: event.clientX ?? 0,
+        y: event.clientY ?? 0,
+        screenX: event.screenX,
+        screenY: event.screenY,
+        button: event.button
+      });
+      listen(target, "contextmenu", (event) => {
+        const value = event;
+        if (!this.game.contextMenu(value.clientX, value.clientY)) return;
+        value.preventDefault();
+        value.stopPropagation();
+      });
+      listen(target, "pointerdown", (event) => {
+        const value = event;
+        try {
+          this.canvas.setPointerCapture(value.pointerId);
+        } catch {
+        }
+        this.game.pointer(pointer("down", value));
+      });
+      listen(target, "pointermove", (event) => this.game.pointer(pointer("move", event)));
+      listen(window, "pointerup", (event) => {
+        const value = event;
+        try {
+          if (this.canvas.hasPointerCapture(value.pointerId)) this.canvas.releasePointerCapture(value.pointerId);
+        } catch {
+        }
+        this.game.pointer(pointer("up", value));
+      });
+      listen(window, "keydown", (event) => {
+        const value = event;
+        if (!this.game.keyDown(value.key)) return;
+        value.preventDefault();
+        value.stopPropagation();
+      });
+      listen(window, "blur", () => this.game.blur());
+    }
+    dispose() {
+      for (const dispose of this.disposers.splice(0)) dispose();
+    }
+  };
+
+  // src/game/platform/canvas-platform.ts
+  var FinchCanvasPlatform = class {
+    get canSetPosition() {
+      return typeof finch.window?.setPosition === "function";
+    }
+    setPosition(x, y) {
+      finch.window?.setPosition(x, y);
+    }
+    setClickThrough(value) {
+      finch.window?.setClickThrough(value);
+    }
+    getDisplays() {
+      return finch.window?.getDisplays() ?? [];
+    }
+  };
+
+  // src/game/apps/flappy-bird/flappy-bird-game.ts
   var STATUS_BAR_HEIGHT = 56;
   var STATUS_BUTTON_SIZE = 32;
   var STATUS_BUTTON_MARGIN = 12;
@@ -1036,7 +794,769 @@ ${this.strings.gameRestartHint}`
     }
   };
 
-  // canvas/drag.ts
+  // src/game/systems/visual-transition.ts
+  var VisualTransitionSystem = class {
+    fromOpacity = 1;
+    toOpacity = 1;
+    fromScale = 1;
+    toScale = 1;
+    startedAt = 0;
+    durationMs = 0;
+    apply(message) {
+      this.fromOpacity = message.fromOpacity;
+      this.toOpacity = message.toOpacity;
+      this.fromScale = message.fromScale;
+      this.toScale = message.toScale;
+      this.startedAt = performance.now();
+      this.durationMs = Math.max(0, message.durationMs);
+    }
+    current(now = performance.now()) {
+      const progress = this.durationMs > 0 ? Math.min(1, (now - this.startedAt) / this.durationMs) : 1;
+      const eased = 1 - Math.pow(1 - progress, 3);
+      return {
+        opacity: this.fromOpacity + (this.toOpacity - this.fromOpacity) * eased,
+        scale: this.fromScale + (this.toScale - this.fromScale) * eased,
+        active: progress < 1
+      };
+    }
+    begin(context, width, height) {
+      const transform = this.current();
+      context.save();
+      context.globalAlpha = Math.max(0, Math.min(1, transform.opacity));
+      context.translate(width / 2, height / 2);
+      context.scale(transform.scale, transform.scale);
+      context.translate(-width / 2, -height / 2);
+    }
+    end(context) {
+      context.restore();
+    }
+  };
+
+  // src/game/apps/flappy-bird/flappy-bird-app.ts
+  var FlappyBirdApp = class {
+    constructor(options) {
+      this.options = options;
+      this.game = new FlappyBirdGame(() => options.post({
+        type: "exitGame",
+        x: window.screenX,
+        y: window.screenY
+      }), options.strings);
+    }
+    options;
+    id = "flappy-bird";
+    game;
+    dragging = false;
+    dragStartScreenX = 0;
+    dragStartScreenY = 0;
+    dragWindowX = 0;
+    dragWindowY = 0;
+    transition = new VisualTransitionSystem();
+    pendingDt = 0;
+    enter() {
+      this.dragging = false;
+      this.options.viewport.canvas.style.cursor = "default";
+      this.setClickThrough(false);
+      this.game.resize(this.options.viewport.width, this.options.viewport.height);
+      this.game.reset();
+    }
+    exit() {
+      this.dragging = false;
+      this.options.viewport.canvas.style.cursor = "default";
+      this.game.cancelPointer();
+      this.game.deactivate();
+    }
+    resize(width, height) {
+      this.game.resize(width, height);
+    }
+    update(dt) {
+      this.pendingDt += dt;
+    }
+    render() {
+      const { context, width, height } = this.options.viewport;
+      context.clearRect(0, 0, width, height);
+      this.transition.begin(context, width, height);
+      this.game.frame(context, this.pendingDt);
+      this.pendingDt = 0;
+      this.transition.end(context);
+    }
+    pointer(event) {
+      this.setClickThrough(false);
+      const screenX = typeof event.screenX === "number" ? event.screenX : window.screenX + event.x;
+      const screenY = typeof event.screenY === "number" ? event.screenY : window.screenY + event.y;
+      if (event.type === "down" && (event.button === void 0 || event.button === 0)) {
+        if (this.game.isDragHandle(event.x, event.y)) {
+          this.dragging = true;
+          this.dragStartScreenX = screenX;
+          this.dragStartScreenY = screenY;
+          this.dragWindowX = window.screenX;
+          this.dragWindowY = window.screenY;
+          this.options.viewport.canvas.style.cursor = "grabbing";
+        } else {
+          this.game.pointerDown(event.x, event.y);
+        }
+        return;
+      }
+      if (event.type === "move") {
+        this.game.pointerMove(event.x, event.y);
+        if (this.dragging) {
+          this.options.platform.setPosition(
+            this.dragWindowX + screenX - this.dragStartScreenX,
+            this.dragWindowY + screenY - this.dragStartScreenY
+          );
+          this.options.viewport.canvas.style.cursor = "grabbing";
+        } else {
+          this.options.viewport.canvas.style.cursor = this.game.cursorAt(event.x, event.y);
+        }
+        return;
+      }
+      if (event.type === "up") {
+        this.dragging = false;
+        this.game.pointerUp(event.x, event.y);
+        this.options.viewport.canvas.style.cursor = this.game.cursorAt(event.x, event.y);
+      }
+    }
+    message(message) {
+      if (message.type === "locale") {
+        this.game.setStrings(message.strings);
+      } else if (message.type === "gameMode" && message.soundUrls) {
+        this.game.setSoundUrls(message.soundUrls);
+      } else if (message.type === "visualTransition") {
+        this.transition.apply(message);
+      }
+    }
+    keyDown(key) {
+      return this.game.keyDown(key);
+    }
+    blur() {
+      this.dragging = false;
+      this.options.viewport.canvas.style.cursor = "default";
+      this.game.cancelPointer();
+    }
+    dispose() {
+      this.exit();
+    }
+    setClickThrough(value) {
+      this.options.platform.setClickThrough(value);
+      this.options.post({ type: "hitTest", clickThrough: value });
+    }
+  };
+
+  // src/game/pet/assets/sprite.ts
+  var BASE_FRAME_WIDTH = 192;
+  var BASE_FRAME_HEIGHT = 208;
+  var COLUMNS = 8;
+  var ROWS = 9;
+  var STATES = {
+    idle: { row: 0 },
+    "running-right": { row: 1 },
+    "running-left": { row: 2 },
+    waving: { row: 3 },
+    jumping: { row: 4 },
+    failed: { row: 5 },
+    waiting: { row: 6 },
+    running: { row: 7 },
+    review: { row: 8 }
+  };
+  var STATE_NAMES = new Set(Object.keys(STATES));
+  function normalizeState(value) {
+    if (typeof value !== "string") return "idle";
+    const state = value.trim().toLowerCase();
+    return STATE_NAMES.has(state) ? state : "idle";
+  }
+  function spriteFrameSize(image) {
+    const sourceWidth = image.naturalWidth || image.width || COLUMNS * BASE_FRAME_WIDTH;
+    const sourceHeight = image.naturalHeight || image.height || ROWS * BASE_FRAME_HEIGHT;
+    return {
+      width: sourceWidth / COLUMNS,
+      height: sourceHeight / ROWS
+    };
+  }
+  function frameHasVisiblePixels(image, row, column) {
+    const frame = spriteFrameSize(image);
+    const canvas = document.createElement("canvas");
+    canvas.width = BASE_FRAME_WIDTH;
+    canvas.height = BASE_FRAME_HEIGHT;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return true;
+    ctx.clearRect(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
+    ctx.drawImage(
+      image,
+      column * frame.width,
+      row * frame.height,
+      frame.width,
+      frame.height,
+      0,
+      0,
+      BASE_FRAME_WIDTH,
+      BASE_FRAME_HEIGHT
+    );
+    const pixels = ctx.getImageData(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT).data;
+    for (let i = 3; i < pixels.length; i += 4) {
+      if (pixels[i] > 8) return true;
+    }
+    return false;
+  }
+  function detectFrameCounts(image) {
+    const counts = Array.from({ length: ROWS }, () => COLUMNS);
+    try {
+      for (let row = 0; row < ROWS; row += 1) {
+        let lastVisible = -1;
+        for (let column = 0; column < COLUMNS; column += 1) {
+          if (frameHasVisiblePixels(image, row, column)) lastVisible = column;
+        }
+        counts[row] = Math.max(1, lastVisible + 1);
+      }
+    } catch {
+      return Array.from({ length: ROWS }, () => COLUMNS);
+    }
+    return counts;
+  }
+  function detectVisibleContentBoundsByRow(image, frameCounts) {
+    const fallback = () => ({ x: 0, y: 0, width: BASE_FRAME_WIDTH, height: BASE_FRAME_HEIGHT });
+    const frame = spriteFrameSize(image);
+    const canvas = document.createElement("canvas");
+    canvas.width = BASE_FRAME_WIDTH;
+    canvas.height = BASE_FRAME_HEIGHT;
+    const c = canvas.getContext("2d", { willReadFrequently: true });
+    if (!c) return Array.from({ length: ROWS }, fallback);
+    const bounds = [];
+    try {
+      for (let row = 0; row < ROWS; row += 1) {
+        let minX = BASE_FRAME_WIDTH;
+        let minY = BASE_FRAME_HEIGHT;
+        let maxX = -1;
+        let maxY = -1;
+        const count = Math.max(1, Math.min(COLUMNS, frameCounts[row] || COLUMNS));
+        for (let column = 0; column < count; column += 1) {
+          c.clearRect(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
+          c.drawImage(
+            image,
+            column * frame.width,
+            row * frame.height,
+            frame.width,
+            frame.height,
+            0,
+            0,
+            BASE_FRAME_WIDTH,
+            BASE_FRAME_HEIGHT
+          );
+          const pixels = c.getImageData(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT).data;
+          for (let y = 0; y < BASE_FRAME_HEIGHT; y += 1) {
+            for (let x = 0; x < BASE_FRAME_WIDTH; x += 1) {
+              if (pixels[(y * BASE_FRAME_WIDTH + x) * 4 + 3] <= 8) continue;
+              minX = Math.min(minX, x);
+              minY = Math.min(minY, y);
+              maxX = Math.max(maxX, x);
+              maxY = Math.max(maxY, y);
+            }
+          }
+        }
+        bounds[row] = maxX < minX || maxY < minY ? fallback() : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+      }
+    } catch {
+      return Array.from({ length: ROWS }, fallback);
+    }
+    return bounds;
+  }
+
+  // src/game/pet/ui/bubble.ts
+  var TOP_BUBBLE_MAX_RISE = 96;
+  var PLACEMENT_HYSTERESIS = 16;
+  var BUBBLE_FONT = '13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+  var BUBBLE_ACTION_FONT = '12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+  function chooseBubblePlacement(args) {
+    const currentOnRight = args.current === "top-right" || args.current === "side-right";
+    const currentOnSide = args.current === "side-left" || args.current === "side-right";
+    const midX = args.displayLeft + args.displayWidth / 2;
+    const placeOnRight = currentOnRight ? args.petCenterX < midX + PLACEMENT_HYSTERESIS : args.petCenterX < midX - PLACEMENT_HYSTERESIS;
+    const clearance = args.petTopY - args.topBoundary;
+    const nearTop = currentOnSide ? clearance < TOP_BUBBLE_MAX_RISE + PLACEMENT_HYSTERESIS : clearance < TOP_BUBBLE_MAX_RISE - PLACEMENT_HYSTERESIS;
+    if (!nearTop) return placeOnRight ? "top-right" : "top-left";
+    return placeOnRight ? "side-right" : "side-left";
+  }
+  function layoutBubble(params) {
+    const { measure: c, text, placement, pet, canvasWidth: w, canvasHeight: h, action } = params;
+    c.font = BUBBLE_FONT;
+    const paddingX = 12;
+    const lineHeight = 17;
+    const actionLabel = action?.label || "";
+    const hasAction = !!action && !!actionLabel;
+    let actionW = 0;
+    if (hasAction) {
+      const previousFont = c.font;
+      c.font = BUBBLE_ACTION_FONT;
+      actionW = Math.max(52, c.measureText(actionLabel).width + 18);
+      c.font = previousFont;
+    }
+    const tailSize = 8;
+    const sideRight = placement === "side-right";
+    const sideLeft = placement === "side-left";
+    const topRight = placement === "top-right";
+    const sidePlacement = sideRight || sideLeft;
+    const bubbleGap = 6;
+    const bubbleLeft = sideRight ? Math.max(102, Math.min(w - 108, pet.x + pet.drawW + bubbleGap)) : topRight ? Math.max(102, Math.min(w - 108, pet.x + pet.drawW * 0.52)) : 0;
+    const bubbleRight = sideLeft ? Math.max(108, Math.min(w - 102, pet.x - bubbleGap)) : topRight ? 0 : Math.max(108, Math.min(w - 102, pet.x + pet.drawW * 0.48));
+    const availableBoxW = sideRight || topRight ? w - bubbleLeft - 12 : bubbleRight - 12;
+    const maxBoxW = Math.min(hasAction ? 240 : 220, availableBoxW);
+    const minBoxW = Math.min(maxBoxW, hasAction ? 150 : 88);
+    const boxW = Math.min(
+      Math.max(c.measureText(text).width + paddingX * 2, minBoxW),
+      maxBoxW
+    );
+    const textMaxW = boxW - paddingX * 2;
+    const lines = [];
+    let line = "";
+    let truncated = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      const candidate = line + char;
+      if (char !== "\n" && (line === "" || c.measureText(candidate).width <= textMaxW)) {
+        line = candidate;
+        continue;
+      }
+      if (line) lines.push(line);
+      line = char === "\n" ? "" : char;
+      if (lines.length === 3) {
+        truncated = index < text.length;
+        break;
+      }
+    }
+    if (lines.length < 3 && line) lines.push(line);
+    if (!lines.length) lines.push("");
+    if (truncated) {
+      let last = lines[lines.length - 1];
+      while (last.length > 1 && c.measureText(`${last}…`).width > textMaxW) last = last.slice(0, -1);
+      lines[lines.length - 1] = `${last}…`;
+    }
+    const textAreaH = lines.length * lineHeight + 16;
+    const actionAreaH = hasAction ? 24 : 0;
+    const boxH = textAreaH + actionAreaH;
+    const verticalOffset = action ? 0 : pet.bounce;
+    const x = sideRight || topRight ? bubbleLeft : bubbleRight - boxW;
+    const boxRight = x + boxW;
+    let y;
+    let tailTipX;
+    let tailTipY;
+    if (sidePlacement) {
+      const sideAnchorY = pet.y + pet.drawH * 0.28;
+      y = Math.max(8, Math.min(h - boxH - 8, sideAnchorY - boxH / 2));
+      tailTipX = sideRight ? x - tailSize : boxRight + tailSize;
+      tailTipY = Math.max(y + 14, Math.min(y + boxH - 14, sideAnchorY));
+    } else {
+      const petBoxTop = h - pet.drawH - 14;
+      tailTipY = petBoxTop + 6 - Math.max(0, verticalOffset);
+      tailTipX = topRight ? x + 20 : boxRight - 20;
+      y = Math.max(8, tailTipY - tailSize - boxH);
+    }
+    const actionLayout = hasAction ? {
+      x: x + boxW - 10 - actionW,
+      y: y + textAreaH - 2,
+      width: actionW,
+      height: 22,
+      label: actionLabel
+    } : null;
+    return {
+      placement,
+      x,
+      y,
+      boxW,
+      boxH,
+      lines,
+      lineHeight,
+      paddingX,
+      textAreaH,
+      tailSize,
+      tailTipX,
+      tailTipY,
+      action: actionLayout
+    };
+  }
+
+  // src/game/pet/rendering/pet-renderer.ts
+  function drawRoundRect(c, x, y, w, h, r) {
+    const radius = Math.min(r, w / 2, h / 2);
+    c.beginPath();
+    c.moveTo(x + radius, y);
+    c.lineTo(x + w - radius, y);
+    c.quadraticCurveTo(x + w, y, x + w, y + radius);
+    c.lineTo(x + w, y + h - radius);
+    c.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+    c.lineTo(x + radius, y + h);
+    c.quadraticCurveTo(x, y + h, x, y + h - radius);
+    c.lineTo(x, y + radius);
+    c.quadraticCurveTo(x, y, x + radius, y);
+    c.closePath();
+  }
+  function drawPetFrame(c, args) {
+    c.save();
+    c.imageSmoothingEnabled = false;
+    c.drawImage(
+      args.image,
+      args.sx,
+      args.sy,
+      args.sourceW,
+      args.sourceH,
+      args.x,
+      args.y,
+      args.drawW,
+      args.drawH
+    );
+    c.restore();
+  }
+  function paintBubble(c, layout, buttonState) {
+    const { x, y, boxW, boxH, tailTipX, tailTipY, placement } = layout;
+    const boxRight = x + boxW;
+    c.save();
+    c.font = BUBBLE_FONT;
+    c.textBaseline = "middle";
+    c.shadowColor = "rgba(0,0,0,0.18)";
+    c.shadowBlur = 12;
+    c.fillStyle = "rgba(255,255,255,0.94)";
+    drawRoundRect(c, x, y, boxW, boxH, 14);
+    c.fill();
+    c.shadowColor = "transparent";
+    c.shadowBlur = 0;
+    c.beginPath();
+    if (placement === "side-right") {
+      c.moveTo(x + 1, tailTipY - 7);
+      c.lineTo(tailTipX, tailTipY);
+      c.lineTo(x + 1, tailTipY + 5);
+    } else if (placement === "side-left") {
+      c.moveTo(boxRight - 1, tailTipY - 7);
+      c.lineTo(tailTipX, tailTipY);
+      c.lineTo(boxRight - 1, tailTipY + 5);
+    } else if (placement === "top-right") {
+      c.moveTo(tailTipX - 3, y + boxH - 1);
+      c.lineTo(tailTipX, tailTipY);
+      c.lineTo(tailTipX + 9, y + boxH - 1);
+    } else {
+      c.moveTo(tailTipX - 9, y + boxH - 1);
+      c.lineTo(tailTipX, tailTipY);
+      c.lineTo(tailTipX + 3, y + boxH - 1);
+    }
+    c.closePath();
+    c.fill();
+    c.textAlign = "left";
+    c.fillStyle = "#3a2f0b";
+    layout.lines.forEach((text, index) => {
+      c.fillText(text, x + layout.paddingX, y + 8 + layout.lineHeight / 2 + index * layout.lineHeight);
+    });
+    if (layout.action) {
+      const action = layout.action;
+      c.fillStyle = buttonState.pressed ? "rgba(44,126,78,0.26)" : buttonState.hover ? "rgba(44,126,78,0.20)" : "rgba(44,126,78,0.14)";
+      drawRoundRect(c, action.x, action.y, action.width, action.height, 8);
+      c.fill();
+      c.font = BUBBLE_ACTION_FONT;
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      c.fillStyle = "#287a4b";
+      c.fillText(action.label, action.x + action.width / 2, action.y + action.height / 2);
+    }
+    c.restore();
+  }
+  function drawLoading(c, width, height, message) {
+    c.save();
+    c.fillStyle = "rgba(255,255,255,0.92)";
+    c.beginPath();
+    c.ellipse(width / 2, height / 2, 62, 42, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "#3a2f0b";
+    c.font = BUBBLE_FONT;
+    c.textAlign = "center";
+    c.textBaseline = "middle";
+    c.fillText(message, width / 2, height / 2);
+    c.restore();
+  }
+
+  // src/game/pet/ui/context-menu.ts
+  var PetContextMenu = class {
+    constructor(onPlayGame, onExitPet, strings) {
+      this.onPlayGame = onPlayGame;
+      this.onExitPet = onExitPet;
+      this.strings = strings;
+    }
+    onPlayGame;
+    onExitPet;
+    strings;
+    element;
+    opened = false;
+    playItem;
+    closeItem;
+    get isOpen() {
+      return this.opened;
+    }
+    setStrings(strings) {
+      this.strings = strings;
+      if (this.playItem) this.playItem.textContent = strings.menuPlayGame;
+      if (this.closeItem) this.closeItem.textContent = strings.menuClosePet;
+    }
+    show(x, y) {
+      const menu = this.ensureElement();
+      menu.style.display = "block";
+      const rect = menu.getBoundingClientRect();
+      const edge = 8;
+      const pointerGap = 4;
+      const opensRight = x + pointerGap + rect.width <= window.innerWidth - edge || x - pointerGap - rect.width < edge;
+      const opensDown = y + pointerGap + rect.height <= window.innerHeight - edge || y - pointerGap - rect.height < edge;
+      const anchoredLeft = opensRight ? x + pointerGap : x - pointerGap - rect.width;
+      const anchoredTop = opensDown ? y + pointerGap : y - pointerGap - rect.height;
+      const left = Math.max(edge, Math.min(anchoredLeft, window.innerWidth - rect.width - edge));
+      const top = Math.max(edge, Math.min(anchoredTop, window.innerHeight - rect.height - edge));
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+      this.opened = true;
+    }
+    hide() {
+      if (!this.element) return;
+      this.element.style.display = "none";
+      this.opened = false;
+    }
+    ensureElement() {
+      if (this.element) return this.element;
+      const menu = document.createElement("div");
+      menu.style.position = "fixed";
+      menu.style.zIndex = "2147483647";
+      menu.style.minWidth = "132px";
+      menu.style.padding = "6px";
+      menu.style.borderRadius = "12px";
+      menu.style.background = "rgba(255,255,255,0.96)";
+      menu.style.boxShadow = "0 12px 32px rgba(0,0,0,0.22)";
+      menu.style.border = "1px solid rgba(0,0,0,0.08)";
+      menu.style.backdropFilter = "blur(12px)";
+      menu.style.font = '13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+      menu.style.color = "#231f20";
+      menu.style.display = "none";
+      menu.style.pointerEvents = "auto";
+      this.playItem = this.makeItem(this.strings.menuPlayGame, () => this.onPlayGame());
+      this.closeItem = this.makeItem(this.strings.menuClosePet, () => this.onExitPet());
+      menu.appendChild(this.playItem);
+      menu.appendChild(this.makeSeparator());
+      menu.appendChild(this.closeItem);
+      document.body.appendChild(menu);
+      this.element = menu;
+      return menu;
+    }
+    makeSeparator() {
+      const separator = document.createElement("div");
+      separator.style.height = "1px";
+      separator.style.margin = "5px 6px";
+      separator.style.background = "rgba(0,0,0,0.08)";
+      return separator;
+    }
+    makeItem(label, onClick) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.textContent = label;
+      item.style.display = "block";
+      item.style.width = "100%";
+      item.style.border = "0";
+      item.style.borderRadius = "8px";
+      item.style.background = "transparent";
+      item.style.padding = "8px 10px";
+      item.style.textAlign = "left";
+      item.style.font = "inherit";
+      item.style.color = "inherit";
+      item.style.cursor = "default";
+      item.addEventListener("mouseenter", () => {
+        item.style.background = "rgba(0,0,0,0.07)";
+      });
+      item.addEventListener("mouseleave", () => {
+        item.style.background = "transparent";
+      });
+      item.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.hide();
+        onClick();
+      });
+      return item;
+    }
+  };
+
+  // src/game/pet/systems/pet-animation-system.ts
+  var PetAnimationSystem = class {
+    constructor(fps, frameCountForRow, cancelMouseAction) {
+      this.fps = fps;
+      this.frameCountForRow = frameCountForRow;
+      this.cancelMouseAction = cancelMouseAction;
+    }
+    fps;
+    frameCountForRow;
+    cancelMouseAction;
+    currentState = "idle";
+    currentOwner = "system";
+    currentMode = "loop";
+    currentFrame = 0;
+    frameAccumMs = 0;
+    transientUntil = 0;
+    mouseActionUntil = 0;
+    agentActionUntil = 0;
+    agentControlled = false;
+    get snapshot() {
+      return {
+        state: this.currentState,
+        owner: this.currentOwner,
+        playMode: this.currentMode,
+        frameIndex: this.currentFrame
+      };
+    }
+    play(next, options = {}, now = performance.now()) {
+      const state = normalizeState(next);
+      const source = options.source ?? "system";
+      if (source === "mouse" && this.isAgentActive(now)) return false;
+      if (source === "agent") this.cancelMouseAction();
+      this.currentState = state;
+      this.currentOwner = source;
+      this.currentFrame = 0;
+      this.frameAccumMs = 0;
+      const transientMs = typeof options.transientMs === "number" ? options.transientMs : 0;
+      const requested = options.playMode === "once" || options.playMode === "freeze" ? options.playMode : null;
+      this.currentMode = requested && state !== "idle" ? requested : "loop";
+      const row = (STATES[state] || STATES.idle).row;
+      const onceMs = this.currentMode === "once" ? this.frameCountForRow(row) * (1e3 / this.fps) : 0;
+      this.transientUntil = transientMs > 0 ? now + transientMs : 0;
+      if (source === "agent") {
+        this.agentControlled = state !== "idle";
+        this.agentActionUntil = state !== "idle" && transientMs > 0 ? now + transientMs : 0;
+        this.mouseActionUntil = 0;
+      } else if (source === "mouse") {
+        this.mouseActionUntil = state !== "idle" ? now + (onceMs || transientMs || 0) : 0;
+      } else if (state === "idle") {
+        this.mouseActionUntil = 0;
+        this.agentActionUntil = 0;
+        this.agentControlled = false;
+        this.currentMode = "loop";
+      }
+      return true;
+    }
+    update(dtMs, now = performance.now()) {
+      if (this.transientUntil && now > this.transientUntil) this.play("idle", { source: this.currentOwner }, now);
+      const row = (STATES[this.currentState] || STATES.idle).row;
+      const frameCount = this.frameCountForRow(row);
+      const frameMs = 1e3 / this.fps;
+      this.frameAccumMs += dtMs;
+      while (this.frameAccumMs >= frameMs) {
+        this.frameAccumMs -= frameMs;
+        if (this.currentFrame >= frameCount - 1) {
+          if (this.currentMode === "once") {
+            this.play("idle", { source: this.currentOwner }, now);
+            break;
+          }
+          if (this.currentMode === "freeze") break;
+        }
+        this.currentFrame = this.currentMode === "loop" ? (this.currentFrame + 1) % frameCount : Math.min(this.currentFrame + 1, frameCount - 1);
+      }
+    }
+    isAgentActive(now = performance.now()) {
+      if (!this.agentControlled || this.currentState === "idle") return false;
+      return !this.agentActionUntil || now < this.agentActionUntil;
+    }
+    isMouseActive(now = performance.now()) {
+      return this.mouseActionUntil > now;
+    }
+    clearMouseAction() {
+      this.mouseActionUntil = 0;
+    }
+  };
+
+  // src/game/pet/systems/pet-bubble-system.ts
+  var PetBubbleSystem = class {
+    text = "";
+    until = 0;
+    persistent = false;
+    sessionId = null;
+    action = null;
+    get snapshot() {
+      return {
+        text: this.text,
+        persistent: this.persistent,
+        sessionId: this.sessionId,
+        action: this.action
+      };
+    }
+    say(text, transientMs, persistent, action, sessionId, now = performance.now()) {
+      if (typeof text !== "string" || !text.trim()) return false;
+      this.text = text.trim().slice(0, 36);
+      this.persistent = persistent === true;
+      const candidate = action;
+      this.action = candidate?.id === "open-session" && typeof candidate.sessionId === "string" ? candidate : null;
+      this.sessionId = typeof sessionId === "string" ? sessionId : this.action?.sessionId ?? null;
+      const durationMs = typeof transientMs === "number" ? Math.max(5e3, transientMs) : 5e3;
+      this.until = this.persistent ? 0 : now + durationMs;
+      return true;
+    }
+    update(now = performance.now()) {
+      if (this.persistent || !this.until || now <= this.until) return false;
+      this.clear();
+      return true;
+    }
+    clear() {
+      this.text = "";
+      this.until = 0;
+      this.persistent = false;
+      this.sessionId = null;
+      this.action = null;
+    }
+  };
+
+  // src/game/pet/systems/pet-hit-test-system.ts
+  var PetHitTestSystem = class {
+    constructor(frameWidth, frameHeight) {
+      this.frameWidth = frameWidth;
+      this.frameHeight = frameHeight;
+    }
+    frameWidth;
+    frameHeight;
+    canvas;
+    context = null;
+    alpha = null;
+    cachedRow = -1;
+    cachedFrame = -1;
+    contains(image, frame, row, frameIndex, x, y) {
+      if (x < frame.x || x > frame.x + frame.drawW || y < frame.y || y > frame.y + frame.drawH) return false;
+      const localX = Math.floor((x - frame.x) / frame.drawW * this.frameWidth);
+      const localY = Math.floor((y - frame.y) / frame.drawH * this.frameHeight);
+      if (localX < 0 || localX >= this.frameWidth || localY < 0 || localY >= this.frameHeight) return false;
+      try {
+        this.ensureCanvas();
+        if (!this.context) return true;
+        if (!this.alpha || row !== this.cachedRow || frameIndex !== this.cachedFrame) {
+          this.context.clearRect(0, 0, this.frameWidth, this.frameHeight);
+          this.context.drawImage(
+            image,
+            frame.sx,
+            frame.sy,
+            frame.sourceW,
+            frame.sourceH,
+            0,
+            0,
+            this.frameWidth,
+            this.frameHeight
+          );
+          this.alpha = this.context.getImageData(0, 0, this.frameWidth, this.frameHeight).data;
+          this.cachedRow = row;
+          this.cachedFrame = frameIndex;
+        }
+        return this.alpha[(localY * this.frameWidth + localX) * 4 + 3] > 8;
+      } catch {
+        return true;
+      }
+    }
+    invalidate() {
+      this.alpha = null;
+      this.cachedRow = -1;
+      this.cachedFrame = -1;
+    }
+    ensureCanvas() {
+      if (this.canvas) return;
+      this.canvas = document.createElement("canvas");
+      this.canvas.width = this.frameWidth;
+      this.canvas.height = this.frameHeight;
+      this.context = this.canvas.getContext("2d", { willReadFrequently: true });
+    }
+  };
+
+  // src/game/pet/physics/drag.ts
   var DRAG_THRESHOLD = 4;
   var DRAG_VELOCITY_SMOOTHING = 0.35;
   var INERTIA_MIN_SPEED = 0.06;
@@ -1157,7 +1677,7 @@ ${this.strings.gameRestartHint}`
     return { ...best, blockedX: best.x !== raw.x, blockedY: best.y !== raw.y };
   }
 
-  // canvas/main.ts
+  // src/game/pet/pet-scene.ts
   var DEBUG_BACKGROUND = false;
   var DEBUG_DYNAMIC_PASSTHROUGH = true;
   var FPS = 8;
@@ -1180,8 +1700,26 @@ ${this.strings.gameRestartHint}`
     loadingPet: "Loading pet…",
     spriteLoadFailed: "Failed to load spritesheet"
   };
-  var postToHost = (message) => finch.postMessage(message);
-  var PetCanvasApp = class {
+  var PetScene = class {
+    constructor(options) {
+      this.options = options;
+      this.canvas = options.viewport.canvas;
+      this.c = options.viewport.context;
+      this.w = options.viewport.width;
+      this.h = options.viewport.height;
+      this.postToHost = options.post;
+      this.animation = new PetAnimationSystem(FPS, (row) => this.frameCountForRow(row), () => this.cancelMouseAction());
+      this.petMenu = new PetContextMenu(
+        () => this.requestGameOpen(),
+        () => this.postToHost({ type: "exitPet" }),
+        this.strings
+      );
+      this.load(options.initialData);
+    }
+    options;
+    id = "pet";
+    transition = new VisualTransitionSystem();
+    postToHost;
     canvas;
     c;
     w = 0;
@@ -1197,15 +1735,9 @@ ${this.strings.gameRestartHint}`
       { length: ROWS },
       () => ({ x: 0, y: 0, width: BASE_FRAME_WIDTH, height: BASE_FRAME_HEIGHT })
     );
-    state = "idle";
-    stateOwner = "system";
-    playMode = "loop";
-    frameIndex = 0;
-    frameAccum = 0;
-    transientUntil = 0;
-    mouseActionUntil = 0;
-    agentActionUntil = 0;
-    agentControlled = false;
+    animation;
+    bubble = new PetBubbleSystem();
+    hitTest = new PetHitTestSystem(BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
     dragging = false;
     dragMoved = false;
     dragStartScreenX = 0;
@@ -1236,11 +1768,6 @@ ${this.strings.gameRestartHint}`
     dragCursorBefore = "";
     lastClickAt = 0;
     clickTimer = 0;
-    bubbleText = "";
-    bubbleUntil = 0;
-    bubblePersistent = false;
-    bubbleSessionId = null;
-    bubbleAction = null;
     bubbleActionBounds = null;
     bubbleButtonPressed = null;
     bubbleButtonHover = null;
@@ -1254,58 +1781,43 @@ ${this.strings.gameRestartHint}`
     scale = 0.72;
     petName = "Pet";
     clickThrough = false;
-    gameActive = false;
-    gameDragging = false;
-    gameDragStartScreenX = 0;
-    gameDragStartScreenY = 0;
-    gameDragWindowX = 0;
-    gameDragWindowY = 0;
-    transitionFromOpacity = 1;
-    transitionToOpacity = 1;
-    transitionFromScale = 1;
-    transitionToScale = 1;
-    transitionStartedAt = 0;
-    transitionDurationMs = 0;
     strings = DEFAULT_CANVAS_STRINGS;
-    game = new FlappyBirdGame(() => postToHost({
-      type: "exitGame",
-      x: window.screenX,
-      y: window.screenY
-    }), this.strings);
-    hitCanvas;
-    hitCtx = null;
-    /** 当前动画帧的 alpha 蒙版；指针移动时直接查数组，避免同步 GPU 像素读取。 */
-    hitAlpha = null;
-    hitFrameRow = -1;
-    hitFrameIndex = -1;
-    contextMenu = new PetContextMenu(
-      () => this.requestGameOpen(),
-      () => postToHost({ type: "exitPet" }),
-      this.strings
-    );
-    domPointerInstalled = false;
-    /** DOM contextmenu 与 Canvas shell 右键事件去重，避免后者用不同坐标覆盖菜单位置。 */
-    lastDomContextMenuAt = 0;
+    petMenu;
+    get state() {
+      return this.animation.snapshot.state;
+    }
+    get stateOwner() {
+      return this.animation.snapshot.owner;
+    }
+    get frameIndex() {
+      return this.animation.snapshot.frameIndex;
+    }
+    get bubbleText() {
+      return this.bubble.snapshot.text;
+    }
+    get bubblePersistent() {
+      return this.bubble.snapshot.persistent;
+    }
+    get bubbleSessionId() {
+      return this.bubble.snapshot.sessionId;
+    }
+    get bubbleAction() {
+      return this.bubble.snapshot.action;
+    }
     applyStrings(strings) {
       this.strings = strings;
-      this.game.setStrings(strings);
-      this.contextMenu.setStrings(strings);
+      this.petMenu.setStrings(strings);
       if (this.error) this.error = strings.spriteLoadFailed;
     }
-    init({ canvas, ctx2d, width, height, initialData }) {
-      this.canvas = canvas;
-      this.c = ctx2d;
-      this.w = width;
-      this.h = height;
+    load(initialData) {
       const data = initialData || {};
       this.applyStrings(data.strings || DEFAULT_CANVAS_STRINGS);
       const layout = data.layout || {};
-      this.expandedHeight = typeof layout.expandedHeight === "number" ? layout.expandedHeight : height;
+      this.expandedHeight = typeof layout.expandedHeight === "number" ? layout.expandedHeight : this.h;
       this.fixedPetCenterX = typeof layout.petCenterX === "number" ? layout.petCenterX : 240;
       this.petAnchorX = this.fixedPetCenterX;
       this.refreshDisplays();
       this.clickThrough = data.initialClickThrough === true;
-      this.gameActive = data.initialGameMode === true;
       const pet = data.pet || {};
       this.petName = pet.displayName || pet.name || data.petName || "Pet";
       this.scale = pet.finch && typeof pet.finch.scale === "number" ? pet.finch.scale : 0.72;
@@ -1324,18 +1836,17 @@ ${this.strings.gameRestartHint}`
         this.error = this.strings.spriteLoadFailed;
       };
       this.image.src = data.spriteDataUrl || "";
-      this.installDomPointerFallback();
-      if (this.gameActive) {
-        this.game.resize(this.w, this.h);
-        this.game.reset();
-        this.setPointerPassthrough(false);
-      }
+    }
+    enter() {
+      this.setPointerPassthrough(this.clickThrough);
+    }
+    exit() {
+      this.petMenu.hide();
     }
     resize(width, height) {
       this.w = width;
       this.h = height;
-      this.game.resize(width, height);
-      this.frame(0);
+      this.pendingFrameMs = Math.max(this.pendingFrameMs, PET_RENDER_INTERVAL_MS);
     }
     cancelMouseAction() {
       if (this.clickTimer) {
@@ -1343,7 +1854,7 @@ ${this.strings.gameRestartHint}`
         this.clickTimer = 0;
       }
       this.lastClickAt = 0;
-      this.mouseActionUntil = 0;
+      this.animation.clearMouseAction();
       this.clearDragIdleTimer();
       this.cancelInertia(false);
       this.restoreDragCursor();
@@ -1394,13 +1905,16 @@ ${this.strings.gameRestartHint}`
       const { actualX, anchorX } = this.resolveWindowPlacement(x);
       const anchorChanged = anchorX !== this.petAnchorX;
       this.petAnchorX = anchorX;
-      if (actualX !== this.lastAppliedX || y !== this.lastAppliedY) finch.window?.setPosition(actualX, y);
+      if (actualX !== this.lastAppliedX || y !== this.lastAppliedY) this.options.platform.setPosition(actualX, y);
       this.lastAppliedX = actualX;
       this.lastAppliedY = y;
       this.lastAppliedAt = performance.now();
       this.watchdogUntil = this.lastAppliedAt + 800;
       this.ensurePositionWatchdog();
-      if (anchorChanged) this.frame(0);
+      if (anchorChanged) {
+        this.pendingFrameMs = Math.max(this.pendingFrameMs, PET_RENDER_INTERVAL_MS);
+        this.render();
+      }
     }
     ensurePositionWatchdog() {
       if (this.watchdogFrameId !== null) return;
@@ -1420,7 +1934,7 @@ ${this.strings.gameRestartHint}`
           this.watchdogMisses += 1;
           if (this.watchdogMisses >= 2) {
             this.watchdogMisses = 0;
-            finch.window?.setPosition(this.lastAppliedX, this.lastAppliedY);
+            this.options.platform.setPosition(this.lastAppliedX, this.lastAppliedY);
           }
         } else {
           this.watchdogMisses = 0;
@@ -1506,7 +2020,7 @@ ${this.strings.gameRestartHint}`
       if (this.dragMoved) this.setDragDirectionFromVelocity(velocity.x);
     }
     startInertia(now) {
-      if (!finch.window || typeof finch.window.setPosition !== "function") return false;
+      if (!this.options.platform.canSetPosition) return false;
       this.dragVelocity = limitVelocity(this.dragVelocity);
       if (Math.hypot(this.dragVelocity.x, this.dragVelocity.y) < INERTIA_MIN_SPEED) return false;
       this.inertiaStartedAt = now;
@@ -1554,7 +2068,7 @@ ${this.strings.gameRestartHint}`
       this.dragDirection = "";
       this.dragAnimationBlocked = false;
       this.dragContentBounds = null;
-      this.mouseActionUntil = 0;
+      this.animation.clearMouseAction();
       if (shouldReturnToIdle) this.setState("idle", { source: "mouse" });
     }
     cancelInertia(settle) {
@@ -1566,41 +2080,14 @@ ${this.strings.gameRestartHint}`
       if (settle) this.settleDragAnimation();
     }
     setState(next, opts) {
-      const state = normalizeState(next);
-      const source = opts && typeof opts.source === "string" ? opts.source : "system";
-      const now = performance.now();
-      if (source === "mouse" && this.isAgentAnimationActive(now)) return;
-      if (source === "agent") this.cancelMouseAction();
-      this.state = state;
-      this.stateOwner = source;
-      this.frameIndex = 0;
-      this.frameAccum = 0;
-      const transientMs = opts && typeof opts.transientMs === "number" ? opts.transientMs : 0;
-      const reqMode = opts && (opts.playMode === "once" || opts.playMode === "freeze") ? opts.playMode : null;
-      this.playMode = reqMode && state !== "idle" ? reqMode : "loop";
-      const onceMs = this.playMode === "once" ? this.frameCountForRow((STATES[state] || STATES.idle).row) * (1e3 / FPS) : 0;
-      this.transientUntil = transientMs > 0 ? now + transientMs : 0;
-      if (source === "agent") {
-        this.agentControlled = state !== "idle";
-        this.agentActionUntil = state !== "idle" && transientMs > 0 ? now + transientMs : 0;
-        this.mouseActionUntil = 0;
-      } else if (source === "mouse") {
-        this.mouseActionUntil = state !== "idle" ? now + (onceMs || transientMs || 0) : 0;
-      } else if (state === "idle") {
-        this.mouseActionUntil = 0;
-        this.agentActionUntil = 0;
-        this.agentControlled = false;
-        this.playMode = "loop";
-      }
+      this.animation.play(next, opts);
     }
     isAgentAnimationActive(now) {
-      if (!this.agentControlled || this.state === "idle") return false;
-      if (!this.agentActionUntil) return true;
-      return (typeof now === "number" ? now : performance.now()) < this.agentActionUntil;
+      return this.animation.isAgentActive(now);
     }
     isMouseActionActive(now) {
       if (this.dragging || this.inertiaFrameId !== null) return true;
-      return this.mouseActionUntil > (typeof now === "number" ? now : performance.now());
+      return this.animation.isMouseActive(typeof now === "number" ? now : performance.now());
     }
     canStartMouseAction(now) {
       const t = typeof now === "number" ? now : performance.now();
@@ -1650,7 +2137,7 @@ ${this.strings.gameRestartHint}`
       this.displaySeams = verticalSeams(this.displays);
     }
     readDisplays() {
-      const fromBridge = finch.window && typeof finch.window.getDisplays === "function" ? finch.window.getDisplays() : [];
+      const fromBridge = this.options.platform.getDisplays();
       const valid = fromBridge.filter((display) => {
         const values = [
           display.bounds.x,
@@ -1707,79 +2194,41 @@ ${this.strings.gameRestartHint}`
       });
     }
     say(text, transientMs, persistent, action, sessionId) {
-      if (typeof text !== "string" || !text.trim()) return;
-      this.bubbleText = text.trim().slice(0, 36);
-      this.bubblePersistent = persistent === true;
-      const candidate = action;
-      this.bubbleAction = candidate && candidate.id === "open-session" && typeof candidate.sessionId === "string" ? candidate : null;
+      if (!this.bubble.say(text, transientMs, persistent, action, sessionId)) return;
       this.updateBubblePlacement();
-      this.bubbleSessionId = typeof sessionId === "string" ? sessionId : this.bubbleAction?.sessionId || null;
-      const durationMs = typeof transientMs === "number" ? Math.max(5e3, transientMs) : 5e3;
-      this.bubbleUntil = this.bubblePersistent ? 0 : performance.now() + durationMs;
     }
     clearBubble(preserveLayout) {
-      this.bubbleText = "";
-      this.bubbleUntil = 0;
-      this.bubblePersistent = false;
-      this.bubbleSessionId = null;
-      this.bubbleAction = null;
+      this.bubble.clear();
       this.bubbleActionBounds = null;
       this.bubbleButtonPressed = null;
       this.bubbleButtonHover = null;
       if (preserveLayout !== true) this.bubblePlacement = "top-left";
     }
-    frame(dt) {
-      const now = performance.now();
-      const transitionActive = this.transitionDurationMs > 0 && now - this.transitionStartedAt < this.transitionDurationMs;
+    update(dt) {
       this.pendingFrameMs += dt;
-      if (dt > 0 && !this.gameActive && !transitionActive && this.pendingFrameMs < PET_RENDER_INTERVAL_MS) return;
+    }
+    render() {
+      const now = performance.now();
+      const transitionActive = this.transition.current(now).active;
+      if (!transitionActive && this.pendingFrameMs < PET_RENDER_INTERVAL_MS) return;
       const renderDt = this.pendingFrameMs;
       this.pendingFrameMs = 0;
       this.t += renderDt / 1e3;
       const c = this.c;
       c.clearRect(0, 0, this.w, this.h);
-      const transitionProgress = this.transitionDurationMs > 0 ? Math.min(1, (now - this.transitionStartedAt) / this.transitionDurationMs) : 1;
-      const eased = 1 - Math.pow(1 - transitionProgress, 3);
-      const opacity = this.transitionFromOpacity + (this.transitionToOpacity - this.transitionFromOpacity) * eased;
-      const visualScale = this.transitionFromScale + (this.transitionToScale - this.transitionFromScale) * eased;
-      c.save();
-      c.globalAlpha = Math.max(0, Math.min(1, opacity));
-      c.translate(this.w / 2, this.h / 2);
-      c.scale(visualScale, visualScale);
-      c.translate(-this.w / 2, -this.h / 2);
-      if (this.gameActive) {
-        this.game.frame(c, renderDt);
-        c.restore();
-        return;
-      }
+      this.transition.begin(c, this.w, this.h);
       if (DEBUG_BACKGROUND) {
         c.save();
         c.fillStyle = "rgba(255, 0, 0, 0.28)";
         c.fillRect(0, 0, this.w, this.h);
         c.restore();
       }
-      if (this.transientUntil && now > this.transientUntil)
-        this.setState("idle", { source: this.stateOwner || "system" });
-      if (!this.bubblePersistent && this.bubbleUntil && now > this.bubbleUntil) this.clearBubble();
+      this.animation.update(renderDt, now);
+      if (this.bubble.update(now)) this.clearBubble();
       if (!this.loaded) {
         drawLoading(c, this.w, this.h, this.error || this.strings.loadingPet);
         c.restore();
         return;
-      }
-      const spec = STATES[this.state] || STATES.idle;
-      const frameMs = 1e3 / FPS;
-      const frameCount = this.frameCountForRow(spec.row);
-      this.frameAccum += renderDt;
-      while (this.frameAccum >= frameMs) {
-        this.frameAccum -= frameMs;
-        if (this.frameIndex >= frameCount - 1) {
-          if (this.playMode === "once") {
-            this.setState("idle", { source: this.stateOwner || "system" });
-            break;
-          }
-          if (this.playMode === "freeze") break;
-        }
-        this.frameIndex = this.playMode === "loop" ? (this.frameIndex + 1) % frameCount : Math.min(this.frameIndex + 1, frameCount - 1);
       }
       const drawSpec = STATES[this.state] || STATES.idle;
       const drawInfo = this.currentPetDrawInfo(drawSpec.row, this.frameCountForRow(drawSpec.row));
@@ -1844,51 +2293,19 @@ ${this.strings.gameRestartHint}`
       const spec = STATES[this.state] || STATES.idle;
       const info = this.currentPetDrawInfo(spec.row, this.frameCountForRow(spec.row));
       if (x < info.x || x > info.x + info.drawW || y < info.y || y > info.y + info.drawH) return false;
-      const localX = Math.floor((x - info.x) / info.drawW * BASE_FRAME_WIDTH);
-      const localY = Math.floor((y - info.y) / info.drawH * BASE_FRAME_HEIGHT);
-      if (localX < 0 || localX >= BASE_FRAME_WIDTH || localY < 0 || localY >= BASE_FRAME_HEIGHT) return false;
-      try {
-        if (!this.hitCanvas) {
-          this.hitCanvas = document.createElement("canvas");
-          this.hitCanvas.width = BASE_FRAME_WIDTH;
-          this.hitCanvas.height = BASE_FRAME_HEIGHT;
-          this.hitCtx = this.hitCanvas.getContext("2d", { willReadFrequently: true });
-        }
-        if (!this.hitCtx) return true;
-        const row = Math.max(0, Math.min(ROWS - 1, spec.row));
-        const frameIndex = Math.min(this.frameIndex, this.frameCountForRow(row) - 1);
-        if (!this.hitAlpha || row !== this.hitFrameRow || frameIndex !== this.hitFrameIndex) {
-          this.hitCtx.clearRect(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
-          this.hitCtx.drawImage(
-            this.image,
-            info.sx,
-            info.sy,
-            info.sourceW,
-            info.sourceH,
-            0,
-            0,
-            BASE_FRAME_WIDTH,
-            BASE_FRAME_HEIGHT
-          );
-          this.hitAlpha = this.hitCtx.getImageData(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT).data;
-          this.hitFrameRow = row;
-          this.hitFrameIndex = frameIndex;
-        }
-        return this.hitAlpha[(localY * BASE_FRAME_WIDTH + localX) * 4 + 3] > 8;
-      } catch {
-        return true;
-      }
+      const row = Math.max(0, Math.min(ROWS - 1, spec.row));
+      const frameIndex = Math.min(this.frameIndex, this.frameCountForRow(row) - 1);
+      return this.hitTest.contains(this.image, info, row, frameIndex, x, y);
     }
     setPointerPassthrough(enabled) {
       if (this.clickThrough === enabled) return;
       this.clickThrough = enabled;
-      if (finch.window && typeof finch.window.setClickThrough === "function")
-        finch.window.setClickThrough(enabled);
-      postToHost({ type: "hitTest", clickThrough: enabled });
+      this.options.platform.setClickThrough(enabled);
+      this.postToHost({ type: "hitTest", clickThrough: enabled });
     }
     updatePointerPassthrough(e) {
       if (!DEBUG_DYNAMIC_PASSTHROUGH) return;
-      if (this.contextMenu.isOpen) {
+      if (this.petMenu.isOpen) {
         this.setPointerPassthrough(false);
         return;
       }
@@ -1902,7 +2319,7 @@ ${this.strings.gameRestartHint}`
     }
     showContextMenu(x, y) {
       this.setPointerPassthrough(false);
-      this.contextMenu.show(x, y);
+      this.petMenu.show(x, y);
     }
     requestGameOpen() {
       const originalX = window.screenX;
@@ -1919,146 +2336,43 @@ ${this.strings.gameRestartHint}`
         width: window.screen.availWidth,
         height: window.screen.availHeight
       };
-      postToHost({
+      this.postToHost({
         type: "enterGame",
+        appId: "flappy-bird",
         originalX,
         originalY,
         centeredX: Math.round(area.x + (area.width - GAME_WINDOW_WIDTH) / 2),
         centeredY: Math.round(area.y + (area.height - GAME_WINDOW_HEIGHT) / 2)
       });
     }
-    installDomPointerFallback() {
-      if (this.domPointerInstalled) return;
-      this.domPointerInstalled = true;
-      const target = this.canvas || document.getElementById("finch-canvas") || window;
-      const toPointer = (type, e) => ({
-        type,
-        x: typeof e.clientX === "number" ? e.clientX : 0,
-        y: typeof e.clientY === "number" ? e.clientY : 0,
-        screenX: typeof e.screenX === "number" ? e.screenX : void 0,
-        screenY: typeof e.screenY === "number" ? e.screenY : void 0,
-        button: typeof e.button === "number" ? e.button : 0
-      });
-      const send = (type, e) => {
-        this.onPointer(toPointer(type, e));
-      };
-      target.addEventListener(
-        "contextmenu",
-        (e) => {
-          const event = e;
-          event.preventDefault();
-          event.stopPropagation();
-          if (this.isPointOnPet(event.clientX, event.clientY)) {
-            this.lastDomContextMenuAt = performance.now();
-            this.showContextMenu(event.clientX, event.clientY);
-          }
-        },
-        true
-      );
-      target.addEventListener("pointerdown", (e) => {
-        const pointer = e;
-        if (this.gameActive && (this.game.isDragHandle(pointer.clientX, pointer.clientY) || this.game.isCloseButtonPoint(pointer.clientX, pointer.clientY) || this.game.isSoundButtonPoint(pointer.clientX, pointer.clientY))) {
-          try {
-            this.canvas.setPointerCapture(pointer.pointerId);
-          } catch {
-          }
-        }
-        send("down", pointer);
-      }, true);
-      target.addEventListener("pointermove", (e) => send("move", e), true);
-      window.addEventListener("pointerup", (e) => {
-        const pointer = e;
-        try {
-          if (this.canvas.hasPointerCapture(pointer.pointerId)) this.canvas.releasePointerCapture(pointer.pointerId);
-        } catch {
-        }
-        send("up", pointer);
-      }, true);
-      window.addEventListener("blur", () => {
-        this.gameDragging = false;
-        if (this.gameActive) {
-          this.canvas.style.cursor = "default";
-          this.game.cancelPointer();
-        }
-        if (this.contextMenu.isOpen) {
-          this.contextMenu.hide();
-          this.setPointerPassthrough(true);
-        }
-      });
-      window.addEventListener(
-        "keydown",
-        (e) => {
-          if (this.gameActive && this.game.keyDown(e.key)) {
-            e.preventDefault();
-            e.stopPropagation();
-            return;
-          }
-          if (e.key === "Escape") this.contextMenu.hide();
-        },
-        true
-      );
-      if (!window.PointerEvent) {
-        target.addEventListener("mousedown", (e) => send("down", e), true);
-        window.addEventListener("mouseup", (e) => send("up", e), true);
-      }
-    }
     playSingleClick() {
       if (!this.canStartMouseAction()) return;
       this.setState("waving", { playMode: "once", source: "mouse" });
-      postToHost({ type: "poke", state: this.state });
+      this.postToHost({ type: "poke", state: this.state });
     }
     playDoubleClick() {
       if (this.bubbleSessionId) {
-        postToHost({ type: "openBubbleSession", sessionId: this.bubbleSessionId });
+        this.postToHost({ type: "openBubbleSession", sessionId: this.bubbleSessionId });
         this.clearBubble();
         return;
       }
       if (!this.canStartMouseAction()) return;
       this.setState("jumping", { playMode: "once", source: "mouse" });
-      postToHost({ type: "poke", state: this.state });
+      this.postToHost({ type: "poke", state: this.state });
     }
-    onPointer(e) {
-      if (this.gameActive) {
-        this.setPointerPassthrough(false);
-        const screenX = typeof e.screenX === "number" ? e.screenX : window.screenX + e.x;
-        const screenY = typeof e.screenY === "number" ? e.screenY : window.screenY + e.y;
-        if (e.type === "down" && (e.button === void 0 || e.button === 0)) {
-          if (this.game.isDragHandle(e.x, e.y)) {
-            this.gameDragging = true;
-            this.gameDragStartScreenX = screenX;
-            this.gameDragStartScreenY = screenY;
-            this.gameDragWindowX = window.screenX;
-            this.gameDragWindowY = window.screenY;
-            this.canvas.style.cursor = "grabbing";
-          } else {
-            this.game.pointerDown(e.x, e.y);
-          }
-        } else if (e.type === "move") {
-          this.game.pointerMove(e.x, e.y);
-          if (this.gameDragging) {
-            finch.window?.setPosition(
-              this.gameDragWindowX + screenX - this.gameDragStartScreenX,
-              this.gameDragWindowY + screenY - this.gameDragStartScreenY
-            );
-            this.canvas.style.cursor = "grabbing";
-          } else {
-            this.canvas.style.cursor = this.game.cursorAt(e.x, e.y);
-          }
-        } else if (e.type === "up") {
-          this.gameDragging = false;
-          this.game.pointerUp(e.x, e.y);
-          this.canvas.style.cursor = this.game.cursorAt(e.x, e.y);
-        }
-        return;
-      }
+    contextMenu(x, y) {
+      if (!this.isPointOnPet(x, y)) return false;
+      this.showContextMenu(x, y);
+      return true;
+    }
+    pointer(e) {
       if (e.type === "move") this.updatePointerPassthrough(e);
       if (e.type === "down") {
         if (typeof e.button === "number" && e.button === 2) {
-          if (performance.now() - this.lastDomContextMenuAt > 160 && this.isPointOnPet(e.x, e.y))
-            this.showContextMenu(e.x, e.y);
+          if (this.isPointOnPet(e.x, e.y)) this.showContextMenu(e.x, e.y);
           return;
         }
-        this.contextMenu.hide();
+        this.petMenu.hide();
         if (typeof e.button === "number" && e.button !== 0) return;
         if (this.inertiaFrameId !== null) this.cancelInertia(true);
         const bubbleButton = this.bubbleButtonAtPoint(e.x, e.y);
@@ -2096,7 +2410,7 @@ ${this.strings.gameRestartHint}`
           this.bubbleButtonHover = this.bubbleAction ? this.bubbleButtonAtPoint(e.x, e.y) : null;
           return;
         }
-        this.contextMenu.hide();
+        this.petMenu.hide();
         this.updateDragPosition(e, performance.now());
         return;
       }
@@ -2107,7 +2421,7 @@ ${this.strings.gameRestartHint}`
           const action = this.bubbleAction;
           this.bubbleButtonPressed = null;
           if (shouldActivate && action) {
-            postToHost({ type: "bubbleAction", action: action.id, sessionId: action.sessionId });
+            this.postToHost({ type: "bubbleAction", action: action.id, sessionId: action.sessionId });
             this.clearBubble();
           }
           this.updatePointerPassthrough(e);
@@ -2120,7 +2434,7 @@ ${this.strings.gameRestartHint}`
         this.clearDragIdleTimer();
         this.restoreDragCursor();
         if (this.dragMoved) {
-          this.mouseActionUntil = 0;
+          this.animation.clearMouseAction();
           if (!this.startInertia(now)) this.settleDragAnimation();
           this.updatePointerPassthrough(e);
           return;
@@ -2147,9 +2461,7 @@ ${this.strings.gameRestartHint}`
         }, 260);
       }
     }
-    onMessage(raw) {
-      if (!isHostToCanvasMessage(raw)) return;
-      const msg = raw;
+    message(msg) {
       if (msg.type === "setState") {
         this.setState(msg.state, {
           transientMs: msg.transientMs,
@@ -2170,37 +2482,73 @@ ${this.strings.gameRestartHint}`
       } else if (msg.type === "locale") {
         this.applyStrings(msg.strings);
       } else if (msg.type === "visualTransition") {
-        this.transitionFromOpacity = msg.fromOpacity;
-        this.transitionToOpacity = msg.toOpacity;
-        this.transitionFromScale = msg.fromScale;
-        this.transitionToScale = msg.toScale;
-        this.transitionStartedAt = performance.now();
-        this.transitionDurationMs = Math.max(0, msg.durationMs);
-      } else if (msg.type === "gameMode") {
-        if (msg.soundUrls) this.game.setSoundUrls(msg.soundUrls);
-        this.gameActive = msg.active;
-        this.gameDragging = false;
-        this.game.cancelPointer();
-        this.canvas.style.cursor = "default";
-        this.contextMenu.hide();
+        this.transition.apply(msg);
+      } else if (msg.type === "gameMode" && msg.active) {
+        this.cancelMouseAction();
+        this.clearBubble();
+        this.petMenu.hide();
         this.setPointerPassthrough(false);
-        if (msg.active) {
-          this.cancelMouseAction();
-          this.clearBubble();
-          this.game.resize(this.w, this.h);
-          this.game.reset();
-        } else {
-          this.game.deactivate();
-        }
       }
     }
+    keyDown(key) {
+      if (key !== "Escape" || !this.petMenu.isOpen) return false;
+      this.petMenu.hide();
+      return true;
+    }
+    blur() {
+      this.cancelMouseAction();
+      this.petMenu.hide();
+      this.setPointerPassthrough(true);
+    }
+    dispose() {
+      this.cancelMouseAction();
+      this.clearBubble();
+      this.petMenu.hide();
+      this.image = void 0;
+    }
   };
-  var app = new PetCanvasApp();
+
+  // src/game/main.ts
+  var DEFAULT_APP_ID = "flappy-bird";
+  var game = new Game({ updatesPerSecond: 60 });
+  var apps = new AppRegistry();
+  var platform = new FinchCanvasPlatform();
+  var input;
+  var post = (message) => finch.postMessage(message);
+  game.register("pet", ({ viewport, initialData }) => new PetScene({ viewport, initialData, post, platform }));
+  apps.register({
+    id: DEFAULT_APP_ID,
+    create: ({ viewport, initialData }) => {
+      const data = initialData || {};
+      return new FlappyBirdApp({
+        viewport,
+        strings: data.strings || DEFAULT_CANVAS_STRINGS,
+        post,
+        platform
+      });
+    }
+  });
+  apps.install(game);
   finch.canvas.define({
-    init: (args) => app.init(args),
-    frame: (dt) => app.frame(dt),
-    resize: (width, height) => app.resize(width, height),
-    onPointer: (e) => app.onPointer(e),
-    onMessage: (msg) => app.onMessage(msg)
+    init: (args) => {
+      const data = args.initialData || {};
+      game.init(args, data.initialGameMode === true ? DEFAULT_APP_ID : "pet");
+      input = new DomInputAdapter(game, args.canvas);
+      input.attach();
+    },
+    frame: (dt) => game.frame(dt),
+    resize: (width, height) => game.resize(width, height),
+    onMessage: (raw) => {
+      if (!isHostToCanvasMessage(raw)) return;
+      if (raw.type === "gameMode") {
+        game.switchScene(raw.active ? apps.require(raw.appId || DEFAULT_APP_ID) : "pet");
+      }
+      game.message(raw);
+    },
+    dispose: () => {
+      input?.dispose();
+      input = void 0;
+      game.dispose();
+    }
   });
 })();

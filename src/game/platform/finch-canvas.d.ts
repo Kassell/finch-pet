@@ -44,6 +44,8 @@ export interface CanvasDefinition {
   resize?(width: number, height: number): void;
   onPointer?(e: CanvasPointerEvent): void;
   onMessage?(msg: unknown): void;
+  /** CanvasWindow 销毁前释放场景、计时器、音频和 DOM 资源。 */
+  dispose?(): void;
 }
 
 export interface FinchCanvasApi {

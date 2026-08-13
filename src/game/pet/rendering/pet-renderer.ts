@@ -2,7 +2,7 @@
  * 纯绘制函数:宠物帧、气泡(消费 bubble.ts 的布局结果)、loading 占位。
  * 不持有状态,不做几何决策。
  */
-import { BUBBLE_ACTION_FONT, BUBBLE_FONT, type BubbleLayout } from "./bubble.js";
+import { BUBBLE_ACTION_FONT, BUBBLE_FONT, type BubbleLayout } from "../ui/bubble.js";
 
 export function drawRoundRect(
   c: CanvasRenderingContext2D,

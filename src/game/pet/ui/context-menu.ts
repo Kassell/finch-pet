@@ -1,5 +1,5 @@
 /** 右键菜单(DOM 悬浮层)。 */
-import type { CanvasStrings } from "../src/protocol.js";
+import type { CanvasStrings } from "../../../shared/protocol.js";
 
 export class PetContextMenu {
   private element: HTMLDivElement | undefined;

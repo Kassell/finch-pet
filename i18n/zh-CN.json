@@ -10,10 +10,29 @@
       "tooltip": "桌宠与游戏"
     }
   },
+  "settings": {
+    "firstPet": {
+      "label": "选择第一只宠物",
+      "description": "先在 Petdex 预览，保存设置后将自动安装并选中。",
+      "options": {
+        "": "暂不选择",
+        "boba": "Boba · 治愈水獭",
+        "doraemon": "Doraemon · 机器猫",
+        "tiko": "Tiko · 工具机器人",
+        "lulu-capybara-2": "噜噜 · 水豚",
+        "noir-webling": "Noir Webling · 侦探蜘蛛"
+      }
+    },
+    "petdexPreview": {
+      "label": "在 Petdex 预览动态宠物",
+      "description": "前往完整宠物画廊挑选。"
+    }
+  },
   "settingsMenu": {
     "playGame": "玩 Flappy Bird",
     "exitGame": "退出游戏",
     "playing": "游戏中",
+    "installFirst": "请先添加一只宠物",
     "showPet": "显示桌宠",
     "hidePet": "隐藏桌宠"
   },
@@ -53,6 +72,7 @@
       "builtin": "内置",
       "custom": "自定义",
       "noPets": "暂无可用宠物",
+      "installFirst": "请先添加一只宠物",
       "noPetTitle": "还没有可显示的宠物",
       "noPetDescription": "请先从 Petdex 安装一只桌宠。",
       "install": "去安装",

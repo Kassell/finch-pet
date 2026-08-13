@@ -7,15 +7,15 @@
  *
  * 由 esbuild 打包为扩展根部的 pet-canvas.js(单文件 IIFE)注入 canvas shell。
  */
-import type { CanvasInitArgs, CanvasPointerEvent } from "./finch-canvas.js";
+import type { CanvasPointerEvent } from "../platform/finch-canvas.js";
 import {
-  isHostToCanvasMessage,
   type BubbleAction,
   type CanvasStrings,
   type CanvasToHostMessage,
+  type HostToCanvasMessage,
   type PetState,
   type PlayMode,
-} from "../src/protocol.js";
+} from "../../shared/protocol.js";
 import {
   BASE_FRAME_HEIGHT,
   BASE_FRAME_WIDTH,
@@ -24,14 +24,18 @@ import {
   STATES,
   detectFrameCounts,
   detectVisibleContentBoundsByRow,
-  normalizeState,
   spriteFrameSize,
   type VisibleBounds,
-} from "./sprite.js";
-import { chooseBubblePlacement, layoutBubble, type BubbleActionLayout, type BubblePlacement } from "./bubble.js";
-import { drawLoading, drawPetFrame, paintBubble } from "./draw.js";
-import { PetContextMenu } from "./context-menu.js";
-import { FlappyBirdGame } from "./flappy-bird.js";
+} from "./assets/sprite.js";
+import { chooseBubblePlacement, layoutBubble, type BubbleActionLayout, type BubblePlacement } from "./ui/bubble.js";
+import { drawLoading, drawPetFrame, paintBubble } from "./rendering/pet-renderer.js";
+import { PetContextMenu } from "./ui/context-menu.js";
+import type { GameViewport, Scene } from "../core/game.js";
+import { VisualTransitionSystem } from "../systems/visual-transition.js";
+import { PetAnimationSystem } from "./systems/pet-animation-system.js";
+import { PetBubbleSystem } from "./systems/pet-bubble-system.js";
+import { PetHitTestSystem } from "./systems/pet-hit-test-system.js";
+import type { CanvasPlatform } from "../platform/canvas-platform.js";
 import {
   DRAG_THRESHOLD,
   INERTIA_MAX_DURATION_MS,
@@ -45,7 +49,7 @@ import {
   type Point,
   type Rect,
   type Velocity,
-} from "./drag.js";
+} from "./physics/drag.js";
 
 const DEBUG_BACKGROUND = false;
 const DEBUG_DYNAMIC_PASSTHROUGH = true;
@@ -59,7 +63,7 @@ const GAME_WINDOW_WIDTH = 360;
 /** 56px 独立状态栏 + 360×640 的 9:16 游戏内容区。 */
 const GAME_WINDOW_HEIGHT = 696;
 /** Canvas 即使由旧版 Host 启动也能完整显示的英文安全回退。 */
-const DEFAULT_CANVAS_STRINGS: CanvasStrings = {
+export const DEFAULT_CANVAS_STRINGS: CanvasStrings = {
   menuPlayGame: "Play a game",
   menuClosePet: "Close pet",
   gameHeader: "Flappy Finch",
@@ -75,7 +79,13 @@ const DEFAULT_CANVAS_STRINGS: CanvasStrings = {
   spriteLoadFailed: "Failed to load spritesheet",
 };
 
-const postToHost = (message: CanvasToHostMessage): void => finch.postMessage(message);
+export interface PetSceneOptions {
+  viewport: GameViewport;
+  initialData: unknown;
+  post(message: CanvasToHostMessage): void;
+  platform: CanvasPlatform;
+}
+
 
 type StateSource = "system" | "mouse" | "agent";
 
@@ -97,7 +107,7 @@ interface PetDrawInfo {
   bounce: number;
 }
 
-interface PetInitialData {
+export interface PetInitialData {
   layout?: { expandedHeight?: number; petCenterX?: number };
   pet?: { displayName?: string; name?: string; finch?: { scale?: number } };
   petName?: string;
@@ -109,7 +119,10 @@ interface PetInitialData {
   strings?: CanvasStrings;
 }
 
-class PetCanvasApp {
+export class PetScene implements Scene {
+  readonly id = "pet";
+  private readonly transition = new VisualTransitionSystem();
+  private readonly postToHost: (message: CanvasToHostMessage) => void;
   private canvas!: HTMLCanvasElement;
   private c!: CanvasRenderingContext2D;
   private w = 0;
@@ -127,15 +140,9 @@ class PetCanvasApp {
     () => ({ x: 0, y: 0, width: BASE_FRAME_WIDTH, height: BASE_FRAME_HEIGHT }),
   );
 
-  private state: PetState = "idle";
-  private stateOwner: StateSource = "system";
-  private playMode: PlayMode = "loop";
-  private frameIndex = 0;
-  private frameAccum = 0;
-  private transientUntil = 0;
-  private mouseActionUntil = 0;
-  private agentActionUntil = 0;
-  private agentControlled = false;
+  private readonly animation: PetAnimationSystem;
+  private readonly bubble = new PetBubbleSystem();
+  private readonly hitTest = new PetHitTestSystem(BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
 
   private dragging = false;
   private dragMoved = false;
@@ -168,11 +175,6 @@ class PetCanvasApp {
   private lastClickAt = 0;
   private clickTimer: ReturnType<typeof setTimeout> | 0 = 0;
 
-  private bubbleText = "";
-  private bubbleUntil = 0;
-  private bubblePersistent = false;
-  private bubbleSessionId: string | null = null;
-  private bubbleAction: BubbleAction | null = null;
   private bubbleActionBounds: BubbleActionLayout | null = null;
   private bubbleButtonPressed: "action" | null = null;
   private bubbleButtonHover: "action" | null = null;
@@ -187,61 +189,48 @@ class PetCanvasApp {
   private scale = 0.72;
   private petName = "Pet";
   private clickThrough = false;
-  private gameActive = false;
-  private gameDragging = false;
-  private gameDragStartScreenX = 0;
-  private gameDragStartScreenY = 0;
-  private gameDragWindowX = 0;
-  private gameDragWindowY = 0;
-  private transitionFromOpacity = 1;
-  private transitionToOpacity = 1;
-  private transitionFromScale = 1;
-  private transitionToScale = 1;
-  private transitionStartedAt = 0;
-  private transitionDurationMs = 0;
   private strings = DEFAULT_CANVAS_STRINGS;
-  private readonly game = new FlappyBirdGame(() => postToHost({
-    type: "exitGame",
-    x: window.screenX,
-    y: window.screenY,
-  }), this.strings);
 
-  private hitCanvas: HTMLCanvasElement | undefined;
-  private hitCtx: CanvasRenderingContext2D | null = null;
-  /** 当前动画帧的 alpha 蒙版；指针移动时直接查数组，避免同步 GPU 像素读取。 */
-  private hitAlpha: Uint8ClampedArray | null = null;
-  private hitFrameRow = -1;
-  private hitFrameIndex = -1;
-  private readonly contextMenu = new PetContextMenu(
-    () => this.requestGameOpen(),
-    () => postToHost({ type: "exitPet" }),
-    this.strings,
-  );
-  private domPointerInstalled = false;
-  /** DOM contextmenu 与 Canvas shell 右键事件去重，避免后者用不同坐标覆盖菜单位置。 */
-  private lastDomContextMenuAt = 0;
+  private readonly petMenu: PetContextMenu;
+
+  constructor(private readonly options: PetSceneOptions) {
+    this.canvas = options.viewport.canvas;
+    this.c = options.viewport.context;
+    this.w = options.viewport.width;
+    this.h = options.viewport.height;
+    this.postToHost = options.post;
+    this.animation = new PetAnimationSystem(FPS, (row) => this.frameCountForRow(row), () => this.cancelMouseAction());
+    this.petMenu = new PetContextMenu(
+      () => this.requestGameOpen(),
+      () => this.postToHost({ type: "exitPet" }),
+      this.strings,
+    );
+    this.load(options.initialData);
+  }
+
+  private get state(): PetState { return this.animation.snapshot.state; }
+  private get stateOwner(): StateSource { return this.animation.snapshot.owner; }
+  private get frameIndex(): number { return this.animation.snapshot.frameIndex; }
+  private get bubbleText(): string { return this.bubble.snapshot.text; }
+  private get bubblePersistent(): boolean { return this.bubble.snapshot.persistent; }
+  private get bubbleSessionId(): string | null { return this.bubble.snapshot.sessionId; }
+  private get bubbleAction(): BubbleAction | null { return this.bubble.snapshot.action; }
 
   private applyStrings(strings: CanvasStrings): void {
     this.strings = strings;
-    this.game.setStrings(strings);
-    this.contextMenu.setStrings(strings);
+    this.petMenu.setStrings(strings);
     if (this.error) this.error = strings.spriteLoadFailed;
   }
 
-  init({ canvas, ctx2d, width, height, initialData }: CanvasInitArgs): void {
-    this.canvas = canvas;
-    this.c = ctx2d;
-    this.w = width;
-    this.h = height;
+  private load(initialData: unknown): void {
     const data = (initialData || {}) as PetInitialData;
     this.applyStrings(data.strings || DEFAULT_CANVAS_STRINGS);
     const layout = data.layout || {};
-    this.expandedHeight = typeof layout.expandedHeight === "number" ? layout.expandedHeight : height;
+    this.expandedHeight = typeof layout.expandedHeight === "number" ? layout.expandedHeight : this.h;
     this.fixedPetCenterX = typeof layout.petCenterX === "number" ? layout.petCenterX : 240;
     this.petAnchorX = this.fixedPetCenterX;
     this.refreshDisplays();
     this.clickThrough = data.initialClickThrough === true;
-    this.gameActive = data.initialGameMode === true;
     const pet = data.pet || {};
     this.petName = pet.displayName || pet.name || data.petName || "Pet";
     this.scale = pet.finch && typeof pet.finch.scale === "number" ? pet.finch.scale : 0.72;
@@ -261,21 +250,16 @@ class PetCanvasApp {
       this.error = this.strings.spriteLoadFailed;
     };
     this.image.src = data.spriteDataUrl || "";
-    this.installDomPointerFallback();
-    if (this.gameActive) {
-      this.game.resize(this.w, this.h);
-      this.game.reset();
-      this.setPointerPassthrough(false);
-    }
   }
+
+  enter(): void { this.setPointerPassthrough(this.clickThrough); }
+  exit(): void { this.petMenu.hide(); }
 
   resize(width: number, height: number): void {
     this.w = width;
     this.h = height;
-    this.game.resize(width, height);
-    // 跨到不同缩放比的屏幕时 devicePixelRatio 变化会触发 resize,shell 重设
-    // canvas 尺寸已把画布清空;同步补画一帧,避免等到下一个 rAF 前闪白。
-    this.frame(0);
+    this.pendingFrameMs = Math.max(this.pendingFrameMs, PET_RENDER_INTERVAL_MS);
+    // Engine 会在 resize 后同步 render，避免 Canvas 尺寸重设后的空白帧。
   }
 
   private cancelMouseAction(): void {
@@ -284,7 +268,7 @@ class PetCanvasApp {
       this.clickTimer = 0;
     }
     this.lastClickAt = 0;
-    this.mouseActionUntil = 0;
+    this.animation.clearMouseAction();
     this.clearDragIdleTimer();
     this.cancelInertia(false);
     this.restoreDragCursor();
@@ -343,13 +327,16 @@ class PetCanvasApp {
     const { actualX, anchorX } = this.resolveWindowPlacement(x);
     const anchorChanged = anchorX !== this.petAnchorX;
     this.petAnchorX = anchorX;
-    if (actualX !== this.lastAppliedX || y !== this.lastAppliedY) finch.window?.setPosition(actualX, y);
+    if (actualX !== this.lastAppliedX || y !== this.lastAppliedY) this.options.platform.setPosition(actualX, y);
     this.lastAppliedX = actualX;
     this.lastAppliedY = y;
     this.lastAppliedAt = performance.now();
     this.watchdogUntil = this.lastAppliedAt + 800;
     this.ensurePositionWatchdog();
-    if (anchorChanged) this.frame(0);
+    if (anchorChanged) {
+      this.pendingFrameMs = Math.max(this.pendingFrameMs, PET_RENDER_INTERVAL_MS);
+      this.render();
+    }
   }
 
   private ensurePositionWatchdog(): void {
@@ -372,7 +359,7 @@ class PetCanvasApp {
         this.watchdogMisses += 1;
         if (this.watchdogMisses >= 2) {
           this.watchdogMisses = 0;
-          finch.window?.setPosition(this.lastAppliedX, this.lastAppliedY);
+          this.options.platform.setPosition(this.lastAppliedX, this.lastAppliedY);
         }
       } else {
         this.watchdogMisses = 0;
@@ -469,7 +456,7 @@ class PetCanvasApp {
   }
 
   private startInertia(now: number): boolean {
-    if (!finch.window || typeof finch.window.setPosition !== "function") return false;
+    if (!this.options.platform.canSetPosition) return false;
     this.dragVelocity = limitVelocity(this.dragVelocity);
     if (Math.hypot(this.dragVelocity.x, this.dragVelocity.y) < INERTIA_MIN_SPEED) return false;
     this.inertiaStartedAt = now;
@@ -524,7 +511,7 @@ class PetCanvasApp {
     this.dragDirection = "";
     this.dragAnimationBlocked = false;
     this.dragContentBounds = null;
-    this.mouseActionUntil = 0;
+    this.animation.clearMouseAction();
     if (shouldReturnToIdle) this.setState("idle", { source: "mouse" });
   }
 
@@ -538,46 +525,16 @@ class PetCanvasApp {
   }
 
   private setState(next: unknown, opts?: SetStateOptions): void {
-    const state = normalizeState(next);
-    const source: StateSource = opts && typeof opts.source === "string" ? opts.source : "system";
-    const now = performance.now();
-    if (source === "mouse" && this.isAgentAnimationActive(now)) return;
-    if (source === "agent") this.cancelMouseAction();
-
-    this.state = state;
-    this.stateOwner = source;
-    this.frameIndex = 0;
-    this.frameAccum = 0;
-    const transientMs = opts && typeof opts.transientMs === "number" ? opts.transientMs : 0;
-    const reqMode = opts && (opts.playMode === "once" || opts.playMode === "freeze") ? opts.playMode : null;
-    this.playMode = reqMode && state !== "idle" ? reqMode : "loop";
-    const onceMs = this.playMode === "once"
-      ? this.frameCountForRow((STATES[state] || STATES.idle).row) * (1000 / FPS)
-      : 0;
-    this.transientUntil = transientMs > 0 ? now + transientMs : 0;
-    if (source === "agent") {
-      this.agentControlled = state !== "idle";
-      this.agentActionUntil = state !== "idle" && transientMs > 0 ? now + transientMs : 0;
-      this.mouseActionUntil = 0;
-    } else if (source === "mouse") {
-      this.mouseActionUntil = state !== "idle" ? now + (onceMs || transientMs || 0) : 0;
-    } else if (state === "idle") {
-      this.mouseActionUntil = 0;
-      this.agentActionUntil = 0;
-      this.agentControlled = false;
-      this.playMode = "loop";
-    }
+    this.animation.play(next, opts);
   }
 
   private isAgentAnimationActive(now?: number): boolean {
-    if (!this.agentControlled || this.state === "idle") return false;
-    if (!this.agentActionUntil) return true;
-    return (typeof now === "number" ? now : performance.now()) < this.agentActionUntil;
+    return this.animation.isAgentActive(now);
   }
 
   private isMouseActionActive(now?: number): boolean {
     if (this.dragging || this.inertiaFrameId !== null) return true;
-    return this.mouseActionUntil > (typeof now === "number" ? now : performance.now());
+    return this.animation.isMouseActive(typeof now === "number" ? now : performance.now());
   }
 
   private canStartMouseAction(now?: number): boolean {
@@ -637,9 +594,7 @@ class PetCanvasApp {
   }
 
   private readDisplays(): DisplayArea[] {
-    const fromBridge = finch.window && typeof finch.window.getDisplays === "function"
-      ? finch.window.getDisplays()
-      : [];
+    const fromBridge = this.options.platform.getDisplays();
     const valid = fromBridge.filter((display) => {
       const values = [
         display.bounds.x,
@@ -724,93 +679,44 @@ class PetCanvasApp {
     action?: unknown,
     sessionId?: unknown,
   ): void {
-    if (typeof text !== "string" || !text.trim()) return;
-    this.bubbleText = text.trim().slice(0, 36);
-    this.bubblePersistent = persistent === true;
-    const candidate = action as BubbleAction | undefined;
-    this.bubbleAction =
-      candidate && candidate.id === "open-session" && typeof candidate.sessionId === "string"
-        ? candidate
-        : null;
+    if (!this.bubble.say(text, transientMs, persistent, action, sessionId)) return;
     this.updateBubblePlacement();
-    this.bubbleSessionId = typeof sessionId === "string"
-      ? sessionId
-      : this.bubbleAction?.sessionId || null;
-    const durationMs = typeof transientMs === "number" ? Math.max(5000, transientMs) : 5000;
-    this.bubbleUntil = this.bubblePersistent ? 0 : performance.now() + durationMs;
   }
 
   private clearBubble(preserveLayout?: boolean): void {
-    this.bubbleText = "";
-    this.bubbleUntil = 0;
-    this.bubblePersistent = false;
-    this.bubbleSessionId = null;
-    this.bubbleAction = null;
+    this.bubble.clear();
     this.bubbleActionBounds = null;
     this.bubbleButtonPressed = null;
     this.bubbleButtonHover = null;
     if (preserveLayout !== true) this.bubblePlacement = "top-left";
   }
 
-  frame(dt: number): void {
-    const now = performance.now();
-    const transitionActive = this.transitionDurationMs > 0
-      && now - this.transitionStartedAt < this.transitionDurationMs;
+  update(dt: number): void {
     this.pendingFrameMs += dt;
-    // dt=0 是 resize / 锚点变化触发的同步补画，不得跳过。
-    if (dt > 0 && !this.gameActive && !transitionActive && this.pendingFrameMs < PET_RENDER_INTERVAL_MS) return;
+  }
+
+  render(): void {
+    const now = performance.now();
+    const transitionActive = this.transition.current(now).active;
+    if (!transitionActive && this.pendingFrameMs < PET_RENDER_INTERVAL_MS) return;
     const renderDt = this.pendingFrameMs;
     this.pendingFrameMs = 0;
     this.t += renderDt / 1000;
     const c = this.c;
     c.clearRect(0, 0, this.w, this.h);
-    const transitionProgress = this.transitionDurationMs > 0
-      ? Math.min(1, (now - this.transitionStartedAt) / this.transitionDurationMs)
-      : 1;
-    const eased = 1 - Math.pow(1 - transitionProgress, 3);
-    const opacity = this.transitionFromOpacity + (this.transitionToOpacity - this.transitionFromOpacity) * eased;
-    const visualScale = this.transitionFromScale + (this.transitionToScale - this.transitionFromScale) * eased;
-    c.save();
-    c.globalAlpha = Math.max(0, Math.min(1, opacity));
-    c.translate(this.w / 2, this.h / 2);
-    c.scale(visualScale, visualScale);
-    c.translate(-this.w / 2, -this.h / 2);
-    if (this.gameActive) {
-      this.game.frame(c, renderDt);
-      c.restore();
-      return;
-    }
+    this.transition.begin(c, this.w, this.h);
     if (DEBUG_BACKGROUND) {
       c.save();
       c.fillStyle = "rgba(255, 0, 0, 0.28)";
       c.fillRect(0, 0, this.w, this.h);
       c.restore();
     }
-    if (this.transientUntil && now > this.transientUntil)
-      this.setState("idle", { source: this.stateOwner || "system" });
-    if (!this.bubblePersistent && this.bubbleUntil && now > this.bubbleUntil) this.clearBubble();
+    this.animation.update(renderDt, now);
+    if (this.bubble.update(now)) this.clearBubble();
     if (!this.loaded) {
       drawLoading(c, this.w, this.h, this.error || this.strings.loadingPet);
       c.restore();
       return;
-    }
-
-    const spec = STATES[this.state] || STATES.idle;
-    const frameMs = 1000 / FPS;
-    const frameCount = this.frameCountForRow(spec.row);
-    this.frameAccum += renderDt;
-    while (this.frameAccum >= frameMs) {
-      this.frameAccum -= frameMs;
-      if (this.frameIndex >= frameCount - 1) {
-        if (this.playMode === "once") {
-          this.setState("idle", { source: this.stateOwner || "system" });
-          break;
-        }
-        if (this.playMode === "freeze") break;
-      }
-      this.frameIndex = this.playMode === "loop"
-        ? (this.frameIndex + 1) % frameCount
-        : Math.min(this.frameIndex + 1, frameCount - 1);
     }
 
     const drawSpec = STATES[this.state] || STATES.idle;
@@ -894,54 +800,22 @@ class PetCanvasApp {
     const spec = STATES[this.state] || STATES.idle;
     const info = this.currentPetDrawInfo(spec.row, this.frameCountForRow(spec.row));
     if (x < info.x || x > info.x + info.drawW || y < info.y || y > info.y + info.drawH) return false;
-    const localX = Math.floor(((x - info.x) / info.drawW) * BASE_FRAME_WIDTH);
-    const localY = Math.floor(((y - info.y) / info.drawH) * BASE_FRAME_HEIGHT);
-    if (localX < 0 || localX >= BASE_FRAME_WIDTH || localY < 0 || localY >= BASE_FRAME_HEIGHT) return false;
-    try {
-      if (!this.hitCanvas) {
-        this.hitCanvas = document.createElement("canvas");
-        this.hitCanvas.width = BASE_FRAME_WIDTH;
-        this.hitCanvas.height = BASE_FRAME_HEIGHT;
-        this.hitCtx = this.hitCanvas.getContext("2d", { willReadFrequently: true });
-      }
-      if (!this.hitCtx) return true;
-      const row = Math.max(0, Math.min(ROWS - 1, spec.row));
-      const frameIndex = Math.min(this.frameIndex, this.frameCountForRow(row) - 1);
-      if (!this.hitAlpha || row !== this.hitFrameRow || frameIndex !== this.hitFrameIndex) {
-        this.hitCtx.clearRect(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
-        this.hitCtx.drawImage(
-          this.image,
-          info.sx,
-          info.sy,
-          info.sourceW,
-          info.sourceH,
-          0,
-          0,
-          BASE_FRAME_WIDTH,
-          BASE_FRAME_HEIGHT,
-        );
-        this.hitAlpha = this.hitCtx.getImageData(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT).data;
-        this.hitFrameRow = row;
-        this.hitFrameIndex = frameIndex;
-      }
-      return this.hitAlpha[(localY * BASE_FRAME_WIDTH + localX) * 4 + 3] > 8;
-    } catch {
-      return true;
-    }
+    const row = Math.max(0, Math.min(ROWS - 1, spec.row));
+    const frameIndex = Math.min(this.frameIndex, this.frameCountForRow(row) - 1);
+    return this.hitTest.contains(this.image, info, row, frameIndex, x, y);
   }
 
   private setPointerPassthrough(enabled: boolean): void {
     if (this.clickThrough === enabled) return;
     this.clickThrough = enabled;
-    if (finch.window && typeof finch.window.setClickThrough === "function")
-      finch.window.setClickThrough(enabled);
-    postToHost({ type: "hitTest", clickThrough: enabled });
+    this.options.platform.setClickThrough(enabled);
+    this.postToHost({ type: "hitTest", clickThrough: enabled });
   }
 
   private updatePointerPassthrough(e: { x: number; y: number }): void {
     if (!DEBUG_DYNAMIC_PASSTHROUGH) return;
     // DOM 菜单必须持续接收空白点击；打开期间禁止透明区重新穿透给系统。
-    if (this.contextMenu.isOpen) {
+    if (this.petMenu.isOpen) {
       this.setPointerPassthrough(false);
       return;
     }
@@ -956,7 +830,7 @@ class PetCanvasApp {
 
   private showContextMenu(x: number, y: number): void {
     this.setPointerPassthrough(false);
-    this.contextMenu.show(x, y);
+    this.petMenu.show(x, y);
   }
 
   private requestGameOpen(): void {
@@ -977,8 +851,9 @@ class PetCanvasApp {
       width: window.screen.availWidth,
       height: window.screen.availHeight,
     };
-    postToHost({
+    this.postToHost({
       type: "enterGame",
+      appId: "flappy-bird",
       originalX,
       originalY,
       centeredX: Math.round(area.x + (area.width - GAME_WINDOW_WIDTH) / 2),
@@ -986,144 +861,38 @@ class PetCanvasApp {
     });
   }
 
-  private installDomPointerFallback(): void {
-    if (this.domPointerInstalled) return;
-    this.domPointerInstalled = true;
-    const target: HTMLElement | Window =
-      this.canvas || document.getElementById("finch-canvas") || window;
-    const toPointer = (type: CanvasPointerEvent["type"], e: MouseEvent): CanvasPointerEvent => ({
-      type,
-      x: typeof e.clientX === "number" ? e.clientX : 0,
-      y: typeof e.clientY === "number" ? e.clientY : 0,
-      screenX: typeof e.screenX === "number" ? e.screenX : undefined,
-      screenY: typeof e.screenY === "number" ? e.screenY : undefined,
-      button: typeof e.button === "number" ? e.button : 0,
-    });
-    const send = (type: CanvasPointerEvent["type"], e: MouseEvent) => {
-      this.onPointer(toPointer(type, e));
-    };
-    target.addEventListener(
-      "contextmenu",
-      (e) => {
-        const event = e as MouseEvent;
-        event.preventDefault();
-        event.stopPropagation();
-        if (this.isPointOnPet(event.clientX, event.clientY)) {
-          this.lastDomContextMenuAt = performance.now();
-          this.showContextMenu(event.clientX, event.clientY);
-        }
-      },
-      true,
-    );
-    target.addEventListener("pointerdown", (e) => {
-      const pointer = e as PointerEvent;
-      if (this.gameActive && (
-        this.game.isDragHandle(pointer.clientX, pointer.clientY)
-        || this.game.isCloseButtonPoint(pointer.clientX, pointer.clientY)
-        || this.game.isSoundButtonPoint(pointer.clientX, pointer.clientY)
-      )) {
-        try { this.canvas.setPointerCapture(pointer.pointerId); } catch { /* shell 不支持时由 window pointerup 兜底。 */ }
-      }
-      send("down", pointer);
-    }, true);
-    target.addEventListener("pointermove", (e) => send("move", e as MouseEvent), true);
-    window.addEventListener("pointerup", (e) => {
-      const pointer = e as PointerEvent;
-      try {
-        if (this.canvas.hasPointerCapture(pointer.pointerId)) this.canvas.releasePointerCapture(pointer.pointerId);
-      } catch { /* 忽略已自动释放的 capture。 */ }
-      send("up", pointer);
-    }, true);
-    window.addEventListener("blur", () => {
-      this.gameDragging = false;
-      if (this.gameActive) {
-        this.canvas.style.cursor = "default";
-        this.game.cancelPointer();
-      }
-      if (this.contextMenu.isOpen) {
-        this.contextMenu.hide();
-        this.setPointerPassthrough(true);
-      }
-    });
-    window.addEventListener(
-      "keydown",
-      (e) => {
-        if (this.gameActive && this.game.keyDown(e.key)) {
-          e.preventDefault();
-          e.stopPropagation();
-          return;
-        }
-        if (e.key === "Escape") this.contextMenu.hide();
-      },
-      true,
-    );
-    if (!window.PointerEvent) {
-      target.addEventListener("mousedown", (e) => send("down", e as MouseEvent), true);
-      window.addEventListener("mouseup", (e) => send("up", e), true);
-    }
-  }
-
   private playSingleClick(): void {
     if (!this.canStartMouseAction()) return;
     this.setState("waving", { playMode: "once", source: "mouse" });
-    postToHost({ type: "poke", state: this.state });
+    this.postToHost({ type: "poke", state: this.state });
   }
 
   private playDoubleClick(): void {
     if (this.bubbleSessionId) {
-      postToHost({ type: "openBubbleSession", sessionId: this.bubbleSessionId });
+      this.postToHost({ type: "openBubbleSession", sessionId: this.bubbleSessionId });
       this.clearBubble();
       return;
     }
     if (!this.canStartMouseAction()) return;
     this.setState("jumping", { playMode: "once", source: "mouse" });
-    postToHost({ type: "poke", state: this.state });
+    this.postToHost({ type: "poke", state: this.state });
   }
 
-  onPointer(e: CanvasPointerEvent): void {
-    if (this.gameActive) {
-      this.setPointerPassthrough(false);
-      const screenX = typeof e.screenX === "number" ? e.screenX : window.screenX + e.x;
-      const screenY = typeof e.screenY === "number" ? e.screenY : window.screenY + e.y;
-      if (e.type === "down" && (e.button === undefined || e.button === 0)) {
-        if (this.game.isDragHandle(e.x, e.y)) {
-          this.gameDragging = true;
-          this.gameDragStartScreenX = screenX;
-          this.gameDragStartScreenY = screenY;
-          this.gameDragWindowX = window.screenX;
-          this.gameDragWindowY = window.screenY;
-          this.canvas.style.cursor = "grabbing";
-        } else {
-          this.game.pointerDown(e.x, e.y);
-        }
-      } else if (e.type === "move") {
-        this.game.pointerMove(e.x, e.y);
-        if (this.gameDragging) {
-          finch.window?.setPosition(
-            this.gameDragWindowX + screenX - this.gameDragStartScreenX,
-            this.gameDragWindowY + screenY - this.gameDragStartScreenY,
-          );
-          this.canvas.style.cursor = "grabbing";
-        } else {
-          this.canvas.style.cursor = this.game.cursorAt(e.x, e.y);
-        }
-      } else if (e.type === "up") {
-        this.gameDragging = false;
-        this.game.pointerUp(e.x, e.y);
-        this.canvas.style.cursor = this.game.cursorAt(e.x, e.y);
-      }
-      return;
-    }
+  contextMenu(x: number, y: number): boolean {
+    if (!this.isPointOnPet(x, y)) return false;
+    this.showContextMenu(x, y);
+    return true;
+  }
+
+  pointer(e: CanvasPointerEvent): void {
     if (e.type === "move") this.updatePointerPassthrough(e);
 
     if (e.type === "down") {
       if (typeof e.button === "number" && e.button === 2) {
-        // DOM contextmenu 提供可靠的 clientX/clientY；仅在它未触发时使用 shell 坐标兜底。
-        if (performance.now() - this.lastDomContextMenuAt > 160 && this.isPointOnPet(e.x, e.y))
-          this.showContextMenu(e.x, e.y);
+        if (this.isPointOnPet(e.x, e.y)) this.showContextMenu(e.x, e.y);
         return;
       }
-      this.contextMenu.hide();
+      this.petMenu.hide();
       if (typeof e.button === "number" && e.button !== 0) return;
       if (this.inertiaFrameId !== null) this.cancelInertia(true);
       const bubbleButton = this.bubbleButtonAtPoint(e.x, e.y);
@@ -1163,7 +932,7 @@ class PetCanvasApp {
         this.bubbleButtonHover = this.bubbleAction ? this.bubbleButtonAtPoint(e.x, e.y) : null;
         return;
       }
-      this.contextMenu.hide();
+      this.petMenu.hide();
       this.updateDragPosition(e, performance.now());
       return;
     }
@@ -1175,7 +944,7 @@ class PetCanvasApp {
         const action = this.bubbleAction;
         this.bubbleButtonPressed = null;
         if (shouldActivate && action) {
-          postToHost({ type: "bubbleAction", action: action.id, sessionId: action.sessionId });
+          this.postToHost({ type: "bubbleAction", action: action.id, sessionId: action.sessionId });
           this.clearBubble();
         }
         this.updatePointerPassthrough(e);
@@ -1189,7 +958,7 @@ class PetCanvasApp {
       this.restoreDragCursor();
 
       if (this.dragMoved) {
-        this.mouseActionUntil = 0;
+        this.animation.clearMouseAction();
         if (!this.startInertia(now)) this.settleDragAnimation();
         this.updatePointerPassthrough(e);
         return;
@@ -1221,9 +990,7 @@ class PetCanvasApp {
     }
   }
 
-  onMessage(raw: unknown): void {
-    if (!isHostToCanvasMessage(raw)) return;
-    const msg = raw;
+  message(msg: HostToCanvasMessage): void {
     if (msg.type === "setState") {
       this.setState(msg.state, {
         transientMs: msg.transientMs,
@@ -1244,38 +1011,31 @@ class PetCanvasApp {
     } else if (msg.type === "locale") {
       this.applyStrings(msg.strings);
     } else if (msg.type === "visualTransition") {
-      this.transitionFromOpacity = msg.fromOpacity;
-      this.transitionToOpacity = msg.toOpacity;
-      this.transitionFromScale = msg.fromScale;
-      this.transitionToScale = msg.toScale;
-      this.transitionStartedAt = performance.now();
-      this.transitionDurationMs = Math.max(0, msg.durationMs);
-    } else if (msg.type === "gameMode") {
-      if (msg.soundUrls) this.game.setSoundUrls(msg.soundUrls);
-      this.gameActive = msg.active;
-      this.gameDragging = false;
-      this.game.cancelPointer();
-      this.canvas.style.cursor = "default";
-      this.contextMenu.hide();
+      this.transition.apply(msg);
+    } else if (msg.type === "gameMode" && msg.active) {
+      this.cancelMouseAction();
+      this.clearBubble();
+      this.petMenu.hide();
       this.setPointerPassthrough(false);
-      if (msg.active) {
-        this.cancelMouseAction();
-        this.clearBubble();
-        this.game.resize(this.w, this.h);
-        this.game.reset();
-      } else {
-        this.game.deactivate();
-      }
     }
   }
+
+  keyDown(key: string): boolean {
+    if (key !== "Escape" || !this.petMenu.isOpen) return false;
+    this.petMenu.hide();
+    return true;
+  }
+
+  blur(): void {
+    this.cancelMouseAction();
+    this.petMenu.hide();
+    this.setPointerPassthrough(true);
+  }
+
+  dispose(): void {
+    this.cancelMouseAction();
+    this.clearBubble();
+    this.petMenu.hide();
+    this.image = undefined;
+  }
 }
-
-const app = new PetCanvasApp();
-
-finch.canvas.define({
-  init: (args) => app.init(args),
-  frame: (dt) => app.frame(dt),
-  resize: (width, height) => app.resize(width, height),
-  onPointer: (e) => app.onPointer(e),
-  onMessage: (msg) => app.onMessage(msg),
-});

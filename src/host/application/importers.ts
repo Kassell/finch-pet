@@ -4,11 +4,11 @@
  */
 import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
-import type { PetRegistryEntry } from './types.js';
-import { displayNameOf, firstMatch, isHttpUrl, isRecord, isRemoteSpritesheetUrl, petdexSlugFromUrl, petIdOf, safePetName } from './utils.js';
-import { findSpritesheet, readPetJson } from './pet-package.js';
-import type { PetRegistryStore } from './registry.js';
-import { findZipSpritesheet, readZipEntries, zipDirname } from './lib/zip.js';
+import type { PetRegistryEntry } from '../domain/types.js';
+import { displayNameOf, firstMatch, isHttpUrl, isRecord, isRemoteSpritesheetUrl, petdexSlugFromUrl, petIdOf, safePetName } from '../domain/utils.js';
+import { findSpritesheet, readPetJson } from '../infrastructure/pet-package.js';
+import type { PetRegistryStore } from '../infrastructure/persistence/pet-registry.js';
+import { findZipSpritesheet, readZipEntries, zipDirname } from '../infrastructure/archive/zip.js';
 
 export interface PetImportersDeps {
   customPetsRoot: string;

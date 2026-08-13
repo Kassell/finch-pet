@@ -1,5 +1,5 @@
 /** 轻量 Flappy Bird 游戏，仅依赖 Canvas 2D。 */
-import type { CanvasStrings } from "../src/protocol.js";
+import type { CanvasStrings } from "../../../shared/protocol.js";
 
 /** 状态栏独立于 9:16 游戏内容区，不计入游戏画面高度。 */
 const STATUS_BAR_HEIGHT = 56;

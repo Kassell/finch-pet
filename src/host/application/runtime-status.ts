@@ -6,7 +6,7 @@
  * 对窗口只依赖 RuntimeStatusHost 接口,不感知窗口实现。
  */
 import type * as finch from 'finch';
-import type { BubbleAction, HostToCanvasMessage, PetState, PlayMode } from './protocol.js';
+import type { BubbleAction, HostToCanvasMessage, PetState, PlayMode } from '../../shared/protocol.js';
 
 type SessionPhase = 'idle' | 'thinking' | 'answering' | 'tool' | 'waiting' | 'done' | 'error';
 type PhraseKind = 'start' | 'thinking' | 'answering' | 'working' | 'done' | 'error' | 'interrupted';
