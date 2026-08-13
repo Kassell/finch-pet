@@ -5,6 +5,37 @@
   "toolMeta": {
     "name": "Finch Pet"
   },
+  "contributes": {
+    "settingsMenu": {
+      "tooltip": "桌宠与游戏"
+    }
+  },
+  "settingsMenu": {
+    "playGame": "玩 Flappy Bird",
+    "exitGame": "退出游戏",
+    "playing": "游戏中",
+    "showPet": "显示桌宠",
+    "hidePet": "隐藏桌宠"
+  },
+  "canvas": {
+    "menu": {
+      "playGame": "玩个游戏",
+      "closePet": "关闭桌宠"
+    },
+    "game": {
+      "header": "Flappy Finch",
+      "title": "FlappyFinch",
+      "startHint": "点击 / 空格键起飞",
+      "best": "最佳 {best}",
+      "over": "游戏结束",
+      "result": "得分 {score}  ·  最佳 {best}",
+      "restartHint": "点击再来一局"
+    },
+    "pet": {
+      "loading": "加载宠物中…",
+      "spriteLoadFailed": "宠物图像加载失败"
+    }
+  },
   "composerActions": {
     "pet-toggle": {
       "tooltip": "控制桌宠",

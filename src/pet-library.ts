@@ -15,7 +15,7 @@ import type { PetRegistryStore } from './registry.js';
 import { DuplicatePetIdError, NoAvailablePetError } from './errors.js';
 
 export interface PetLibraryDeps {
-  ctx: finch.ExtensionContext;
+  ctx: finch.MiniToolContext;
   builtinPetsRoot: string;
   customPetsRoot: string;
   registry: PetRegistryStore;

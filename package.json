@@ -22,6 +22,7 @@
   },
   "finch": {
     "manifestVersion": 1,
+    "minVersion": "1.5.4",
     "id": "finch-pet",
     "name": "Finch Pet",
     "description": "Desktop pet for Finch.",
@@ -50,6 +51,10 @@
     "contributes": {
       "tools": true,
       "skills": false,
+      "settingsMenu": {
+        "icon": "gamepad-2",
+        "tooltip": "Pet and game controls"
+      },
       "composerActions": [
         {
           "id": "pet-toggle",
@@ -88,7 +93,7 @@
     }
   },
   "devDependencies": {
-    "@finchtoys/minitool-api": "^0.1.17",
+    "@finchtoys/minitool-api": "^0.2.14",
     "@types/node": "^26.1.0",
     "esbuild": "^0.28.1",
     "fflate": "^0.8.3",

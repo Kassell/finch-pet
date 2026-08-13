@@ -36,6 +36,14 @@
         return true;
       case "config":
         return isOptionalNumber(value.scale);
+      case "gameMode":
+        return typeof value.active === "boolean";
+      case "prepareGame":
+        return true;
+      case "locale":
+        return isRecord(value.strings) && Object.values(value.strings).every((text) => typeof text === "string");
+      case "visualTransition":
+        return typeof value.fromOpacity === "number" && typeof value.toOpacity === "number" && typeof value.fromScale === "number" && typeof value.toScale === "number" && typeof value.durationMs === "number";
       default:
         return false;
     }
@@ -370,21 +378,38 @@
 
   // canvas/context-menu.ts
   var PetContextMenu = class {
-    constructor(onExitPet) {
+    constructor(onPlayGame, onExitPet, strings) {
+      this.onPlayGame = onPlayGame;
       this.onExitPet = onExitPet;
+      this.strings = strings;
     }
+    onPlayGame;
     onExitPet;
+    strings;
     element;
     opened = false;
+    playItem;
+    closeItem;
     get isOpen() {
       return this.opened;
+    }
+    setStrings(strings) {
+      this.strings = strings;
+      if (this.playItem) this.playItem.textContent = strings.menuPlayGame;
+      if (this.closeItem) this.closeItem.textContent = strings.menuClosePet;
     }
     show(x, y) {
       const menu = this.ensureElement();
       menu.style.display = "block";
       const rect = menu.getBoundingClientRect();
-      const left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
-      const top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8));
+      const edge = 8;
+      const pointerGap = 4;
+      const opensRight = x + pointerGap + rect.width <= window.innerWidth - edge || x - pointerGap - rect.width < edge;
+      const opensDown = y + pointerGap + rect.height <= window.innerHeight - edge || y - pointerGap - rect.height < edge;
+      const anchoredLeft = opensRight ? x + pointerGap : x - pointerGap - rect.width;
+      const anchoredTop = opensDown ? y + pointerGap : y - pointerGap - rect.height;
+      const left = Math.max(edge, Math.min(anchoredLeft, window.innerWidth - rect.width - edge));
+      const top = Math.max(edge, Math.min(anchoredTop, window.innerHeight - rect.height - edge));
       menu.style.left = `${left}px`;
       menu.style.top = `${top}px`;
       this.opened = true;
@@ -410,10 +435,21 @@
       menu.style.color = "#231f20";
       menu.style.display = "none";
       menu.style.pointerEvents = "auto";
-      menu.appendChild(this.makeItem("关闭桌宠", () => this.onExitPet()));
+      this.playItem = this.makeItem(this.strings.menuPlayGame, () => this.onPlayGame());
+      this.closeItem = this.makeItem(this.strings.menuClosePet, () => this.onExitPet());
+      menu.appendChild(this.playItem);
+      menu.appendChild(this.makeSeparator());
+      menu.appendChild(this.closeItem);
       document.body.appendChild(menu);
       this.element = menu;
       return menu;
+    }
+    makeSeparator() {
+      const separator = document.createElement("div");
+      separator.style.height = "1px";
+      separator.style.margin = "5px 6px";
+      separator.style.background = "rgba(0,0,0,0.08)";
+      return separator;
     }
     makeItem(label, onClick) {
       const item = document.createElement("button");
@@ -442,6 +478,435 @@
         onClick();
       });
       return item;
+    }
+  };
+
+  // canvas/flappy-bird.ts
+  var STATUS_BAR_HEIGHT = 56;
+  var CLOSE_BUTTON_SIZE = 32;
+  var CLOSE_BUTTON_RIGHT = 12;
+  var FlappyBirdGame = class {
+    constructor(onExit, strings) {
+      this.onExit = onExit;
+      this.strings = strings;
+    }
+    onExit;
+    strings;
+    width = 0;
+    height = 0;
+    birdY = 0;
+    velocity = 0;
+    elapsed = 0;
+    spawnElapsed = 0;
+    score = 0;
+    best = 0;
+    phase = "ready";
+    pipes = [];
+    closeHovered = false;
+    closePressed = false;
+    closePressStartedAt = 0;
+    closePressX = 0;
+    closePressY = 0;
+    closePressMoved = false;
+    playPressed = false;
+    playPressPhase = "ready";
+    playPressStartedAt = 0;
+    playPressX = 0;
+    playPressY = 0;
+    playPressMoved = false;
+    setStrings(strings) {
+      this.strings = strings;
+    }
+    format(template, values) {
+      return template.replace(/\{(\w+)\}/g, (match, key) => Object.prototype.hasOwnProperty.call(values, key) ? String(values[key]) : match);
+    }
+    resize(width, height) {
+      this.width = width;
+      this.height = height;
+      if (this.phase === "ready") this.birdY = STATUS_BAR_HEIGHT + (height - STATUS_BAR_HEIGHT) * 0.43;
+    }
+    reset() {
+      this.birdY = STATUS_BAR_HEIGHT + (this.height - STATUS_BAR_HEIGHT) * 0.43;
+      this.velocity = 0;
+      this.elapsed = 0;
+      this.spawnElapsed = 0;
+      this.score = 0;
+      this.phase = "ready";
+      this.pipes = [];
+    }
+    flap() {
+      if (this.phase === "over") return;
+      if (this.phase === "ready") this.phase = "playing";
+      this.velocity = -410;
+    }
+    keyDown(key) {
+      if (key === "Escape") {
+        this.onExit();
+        return true;
+      }
+      if (key === " " || key === "Spacebar" || key === "ArrowUp" || key.toLowerCase() === "w") {
+        if (this.phase === "over") this.reset();
+        this.flap();
+        return true;
+      }
+      return false;
+    }
+    isDragHandle(x, y) {
+      return y >= 0 && y <= STATUS_BAR_HEIGHT && !this.isCloseButtonPoint(x, y);
+    }
+    isCloseButtonPoint(x, y) {
+      const buttonX = this.width - CLOSE_BUTTON_RIGHT - CLOSE_BUTTON_SIZE;
+      const buttonY = (STATUS_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2;
+      return x >= buttonX && x <= buttonX + CLOSE_BUTTON_SIZE && y >= buttonY && y <= buttonY + CLOSE_BUTTON_SIZE;
+    }
+    cursorAt(x, y) {
+      if (this.isCloseButtonPoint(x, y)) return "pointer";
+      if (this.isDragHandle(x, y)) return "grab";
+      return "default";
+    }
+    pointerDown(x, y) {
+      if (this.isDragHandle(x, y)) return;
+      if (this.isCloseButtonPoint(x, y)) {
+        this.closePressed = true;
+        this.closeHovered = true;
+        this.closePressStartedAt = performance.now();
+        this.closePressX = x;
+        this.closePressY = y;
+        this.closePressMoved = false;
+        return;
+      }
+      if (this.playPressed) return;
+      this.playPressed = true;
+      this.playPressPhase = this.phase;
+      this.playPressStartedAt = performance.now();
+      this.playPressX = x;
+      this.playPressY = y;
+      this.playPressMoved = false;
+      if (this.phase !== "over") this.flap();
+    }
+    pointerMove(x, y) {
+      this.closeHovered = this.isCloseButtonPoint(x, y);
+      if (this.closePressed && Math.hypot(x - this.closePressX, y - this.closePressY) > 6)
+        this.closePressMoved = true;
+      if (this.playPressed && Math.hypot(x - this.playPressX, y - this.playPressY) > 6)
+        this.playPressMoved = true;
+    }
+    pointerUp(x, y) {
+      if (this.closePressed) {
+        const isShortClick = performance.now() - this.closePressStartedAt <= 500;
+        const shouldClose = isShortClick && !this.closePressMoved && this.isCloseButtonPoint(x, y);
+        this.closePressed = false;
+        this.closeHovered = this.isCloseButtonPoint(x, y);
+        if (shouldClose) this.onExit();
+        return;
+      }
+      this.closeHovered = this.isCloseButtonPoint(x, y);
+      if (!this.playPressed) return;
+      const shouldRestart = this.playPressPhase === "over" && this.phase === "over" && !this.playPressMoved && performance.now() - this.playPressStartedAt <= 500;
+      this.playPressed = false;
+      this.playPressMoved = false;
+      if (shouldRestart) {
+        this.reset();
+        this.flap();
+      }
+    }
+    cancelPointer() {
+      this.closePressed = false;
+      this.closeHovered = false;
+      this.closePressMoved = false;
+      this.playPressed = false;
+      this.playPressMoved = false;
+    }
+    frame(ctx, dtMs) {
+      const dt = Math.min(0.034, Math.max(0, dtMs / 1e3));
+      this.elapsed += dt;
+      if (this.phase === "playing") this.update(dt);
+      this.paint(ctx);
+    }
+    update(dt) {
+      const birdX = this.width * 0.3;
+      const pipeWidth = 68;
+      const contentHeight = this.height - STATUS_BAR_HEIGHT;
+      const gap = Math.max(138, Math.min(166, contentHeight * 0.25));
+      const floorY = this.height - 72;
+      this.velocity += 1120 * dt;
+      this.birdY += this.velocity * dt;
+      const ceilingY = STATUS_BAR_HEIGHT + 14;
+      if (this.birdY < ceilingY) {
+        this.birdY = ceilingY;
+        if (this.velocity < 0) this.velocity = 0;
+      }
+      this.spawnElapsed += dt;
+      if (this.spawnElapsed >= 1.45) {
+        this.spawnElapsed -= 1.45;
+        const margin = gap / 2 + 72;
+        const range = Math.max(1, floorY - margin * 2);
+        this.pipes.push({ x: this.width + 20, gapY: margin + Math.random() * range, scored: false });
+      }
+      for (const pipe of this.pipes) {
+        pipe.x -= 176 * dt;
+        if (!pipe.scored && pipe.x + pipeWidth < birdX) {
+          pipe.scored = true;
+          this.score += 1;
+          this.best = Math.max(this.best, this.score);
+        }
+      }
+      this.pipes = this.pipes.filter((pipe) => pipe.x + pipeWidth > -8);
+      const bird = { left: birdX - 17, right: birdX + 17, top: this.birdY - 14, bottom: this.birdY + 14 };
+      const hitPipe = this.pipes.some((pipe) => {
+        const overlapsX = bird.right > pipe.x && bird.left < pipe.x + pipeWidth;
+        return overlapsX && (bird.top < pipe.gapY - gap / 2 || bird.bottom > pipe.gapY + gap / 2);
+      });
+      if (hitPipe || bird.bottom >= floorY) {
+        this.phase = "over";
+        this.best = Math.max(this.best, this.score);
+      }
+    }
+    paint(ctx) {
+      const w = this.width;
+      const h = this.height;
+      const floorY = h - 72;
+      const birdX = w * 0.3;
+      const contentHeight = h - STATUS_BAR_HEIGHT;
+      const gap = Math.max(138, Math.min(166, contentHeight * 0.25));
+      const sky = ctx.createLinearGradient(0, 0, 0, h);
+      sky.addColorStop(0, "#78d7f5");
+      sky.addColorStop(0.72, "#d8f5ef");
+      sky.addColorStop(1, "#f7e6a7");
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, w, h);
+      this.paintCloud(ctx, w - this.elapsed * 18 % (w + 120) + 30, 130, 0.9);
+      this.paintCloud(ctx, w - (this.elapsed * 11 + 230) % (w + 160) + 50, 214, 0.65);
+      for (const pipe of this.pipes) this.paintPipe(ctx, pipe.x, pipe.gapY, gap, floorY);
+      ctx.fillStyle = "#8bd34f";
+      ctx.fillRect(0, floorY, w, 18);
+      ctx.fillStyle = "#62ad3e";
+      ctx.fillRect(0, floorY + 12, w, 8);
+      ctx.fillStyle = "#e9ca72";
+      ctx.fillRect(0, floorY + 20, w, h - floorY - 20);
+      ctx.fillStyle = "rgba(166, 119, 47, 0.18)";
+      for (let x = -20; x < w + 20; x += 38) ctx.fillRect(x, floorY + 34, 20, 4);
+      if (this.phase !== "ready") {
+        const angle = Math.max(-0.48, Math.min(1.15, this.velocity / 620));
+        this.paintBird(ctx, birdX, this.birdY, angle);
+      }
+      if (this.phase !== "ready") this.paintScore(ctx);
+      else this.paintReadyScreen(ctx, floorY);
+      if (this.best > 0) this.paintBestScore(ctx);
+      this.paintStatusBar(ctx);
+      if (this.phase === "over")
+        this.paintCard(
+          ctx,
+          this.strings.gameOver,
+          `${this.format(this.strings.gameResult, { score: this.score, best: this.best })}
+${this.strings.gameRestartHint}`
+        );
+    }
+    paintPipe(ctx, x, gapY, gap, floorY) {
+      const width = 68;
+      const topBottom = gapY - gap / 2;
+      const bottomTop = gapY + gap / 2;
+      const gradient = ctx.createLinearGradient(x, 0, x + width, 0);
+      gradient.addColorStop(0, "#4bbd48");
+      gradient.addColorStop(0.45, "#9be15d");
+      gradient.addColorStop(1, "#2f9639");
+      ctx.fillStyle = gradient;
+      ctx.strokeStyle = "#267a31";
+      ctx.lineWidth = 3;
+      ctx.fillRect(x, STATUS_BAR_HEIGHT, width, topBottom - STATUS_BAR_HEIGHT - 18);
+      ctx.strokeRect(x, STATUS_BAR_HEIGHT - 3, width, topBottom - STATUS_BAR_HEIGHT - 15);
+      ctx.fillRect(x - 6, topBottom - 26, width + 12, 26);
+      ctx.strokeRect(x - 6, topBottom - 26, width + 12, 26);
+      ctx.fillRect(x, bottomTop + 18, width, floorY - bottomTop - 18);
+      ctx.strokeRect(x, bottomTop + 18, width, floorY - bottomTop - 15);
+      ctx.fillRect(x - 6, bottomTop, width + 12, 26);
+      ctx.strokeRect(x - 6, bottomTop, width + 12, 26);
+    }
+    paintBird(ctx, x, y, angle) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      const bodyGradient = ctx.createLinearGradient(-17, -16, 16, 14);
+      bodyGradient.addColorStop(0, "#9ae9d0");
+      bodyGradient.addColorStop(0.52, "#58c9a7");
+      bodyGradient.addColorStop(1, "#29987b");
+      ctx.fillStyle = bodyGradient;
+      ctx.strokeStyle = "#226f60";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(-25, 9);
+      ctx.bezierCurveTo(-16, 4, -13, -8, -5, -14);
+      ctx.bezierCurveTo(2, -20, 14, -18, 19, -9);
+      ctx.bezierCurveTo(25, 1, 18, 14, 7, 17);
+      ctx.bezierCurveTo(-5, 21, -16, 16, -25, 9);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#fffdf9";
+      ctx.beginPath();
+      ctx.moveTo(5, -14);
+      ctx.bezierCurveTo(15, -14, 20, -7, 19, 2);
+      ctx.bezierCurveTo(18, 12, 10, 17, 1, 16);
+      ctx.bezierCurveTo(-6, 15, -9, 10, -7, 4);
+      ctx.bezierCurveTo(-4, -4, -1, -11, 5, -14);
+      ctx.closePath();
+      ctx.fill();
+      const wingGradient = ctx.createLinearGradient(-24, 0, 4, 14);
+      wingGradient.addColorStop(0, "#155e53");
+      wingGradient.addColorStop(1, "#2fa584");
+      ctx.fillStyle = wingGradient;
+      ctx.beginPath();
+      ctx.moveTo(-24, 8);
+      ctx.bezierCurveTo(-14, 8, -8, 2, -3, -4);
+      ctx.bezierCurveTo(-2, 7, 2, 12, 8, 15);
+      ctx.bezierCurveTo(-5, 19, -17, 15, -24, 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#f2a33a";
+      ctx.strokeStyle = "#a96120";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(18, -7);
+      ctx.lineTo(27, -3);
+      ctx.lineTo(18, 1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#202827";
+      ctx.beginPath();
+      ctx.arc(11, -8, 2.7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.beginPath();
+      ctx.arc(10.2, -8.8, 0.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    paintCloud(ctx, x, y, scale) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(scale, scale);
+      ctx.fillStyle = "rgba(255,255,255,0.72)";
+      ctx.beginPath();
+      ctx.arc(0, 10, 23, 0, Math.PI * 2);
+      ctx.arc(27, 0, 31, 0, Math.PI * 2);
+      ctx.arc(60, 12, 22, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    paintScore(ctx) {
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = "rgba(0,0,0,0.28)";
+      ctx.fillStyle = "#fff";
+      ctx.font = '800 42px -apple-system, BlinkMacSystemFont, "SF Pro Rounded", sans-serif';
+      ctx.strokeText(String(this.score), this.width / 2, STATUS_BAR_HEIGHT + 38);
+      ctx.fillText(String(this.score), this.width / 2, STATUS_BAR_HEIGHT + 38);
+    }
+    paintBestScore(ctx) {
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.font = '700 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,0.2)";
+      ctx.fillStyle = "rgba(255,255,255,0.96)";
+      const label = this.format(this.strings.gameBest, { best: this.best });
+      ctx.strokeText(label, this.width - 16, STATUS_BAR_HEIGHT + 24);
+      ctx.fillText(label, this.width - 16, STATUS_BAR_HEIGHT + 24);
+    }
+    paintReadyScreen(ctx, floorY) {
+      const titleY = STATUS_BAR_HEIGHT + (floorY - STATUS_BAR_HEIGHT) * 0.28;
+      const titleGradient = ctx.createLinearGradient(0, titleY - 34, 0, titleY + 28);
+      titleGradient.addColorStop(0, "#fff7a8");
+      titleGradient.addColorStop(0.48, "#ffd348");
+      titleGradient.addColorStop(1, "#f59b28");
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = '900 43px -apple-system, BlinkMacSystemFont, "SF Pro Rounded", sans-serif';
+      ctx.lineJoin = "round";
+      ctx.shadowColor = "rgba(37,73,68,0.3)";
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetY = 6;
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = "#fffdf0";
+      ctx.strokeText(this.strings.gameTitle, this.width / 2, titleY);
+      ctx.shadowColor = "transparent";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#a76022";
+      ctx.strokeText(this.strings.gameTitle, this.width / 2, titleY);
+      ctx.fillStyle = titleGradient;
+      ctx.fillText(this.strings.gameTitle, this.width / 2, titleY);
+      ctx.restore();
+      const pulse = 0.5 + 0.5 * Math.sin(this.elapsed * 4.2);
+      ctx.save();
+      ctx.globalAlpha = 0.42 + pulse * 0.58;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = '700 16px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+      ctx.fillStyle = "#385f5b";
+      ctx.fillText(this.strings.gameStartHint, this.width / 2, floorY - 34);
+      ctx.restore();
+    }
+    paintStatusBar(ctx) {
+      const buttonX = this.width - CLOSE_BUTTON_RIGHT - CLOSE_BUTTON_SIZE;
+      const buttonY = (STATUS_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2;
+      ctx.fillStyle = "rgba(255,255,255,0.84)";
+      ctx.fillRect(0, 0, this.width, STATUS_BAR_HEIGHT);
+      ctx.fillStyle = "rgba(37,66,65,0.1)";
+      ctx.fillRect(0, STATUS_BAR_HEIGHT - 1, this.width, 1);
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#203f3d";
+      ctx.font = '700 15px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+      ctx.fillText(this.strings.gameHeader, this.width / 2, STATUS_BAR_HEIGHT / 2);
+      const pressedInside = this.closePressed && this.closeHovered;
+      const buttonScale = pressedInside ? 0.9 : 1;
+      const centerX = buttonX + CLOSE_BUTTON_SIZE / 2;
+      const centerY = buttonY + CLOSE_BUTTON_SIZE / 2;
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      ctx.scale(buttonScale, buttonScale);
+      ctx.translate(-centerX, -centerY);
+      ctx.fillStyle = pressedInside ? "rgba(32,63,61,0.2)" : this.closeHovered ? "rgba(32,63,61,0.13)" : "rgba(32,63,61,0.07)";
+      ctx.beginPath();
+      ctx.roundRect(buttonX, buttonY, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE / 2);
+      ctx.fill();
+      ctx.strokeStyle = pressedInside ? "#122c2a" : "#203f3d";
+      ctx.lineWidth = 1.8;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(buttonX + 11, buttonY + 11);
+      ctx.lineTo(buttonX + 21, buttonY + 21);
+      ctx.moveTo(buttonX + 21, buttonY + 11);
+      ctx.lineTo(buttonX + 11, buttonY + 21);
+      ctx.stroke();
+      ctx.restore();
+    }
+    paintCard(ctx, title, subtitle) {
+      const cardWidth = Math.min(330, this.width - 48);
+      const lines = subtitle.split("\n");
+      const cardHeight = lines.length > 1 ? 132 : 112;
+      const x = (this.width - cardWidth) / 2;
+      const contentHeight = this.height - STATUS_BAR_HEIGHT;
+      const y = STATUS_BAR_HEIGHT + contentHeight * 0.2;
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.strokeStyle = "rgba(45,82,75,0.18)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(x, y, cardWidth, cardHeight, 22);
+      ctx.fill();
+      ctx.stroke();
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#294b48";
+      ctx.font = '800 25px -apple-system, BlinkMacSystemFont, "SF Pro Rounded", sans-serif';
+      ctx.fillText(title, this.width / 2, y + 34);
+      ctx.fillStyle = "#56736f";
+      ctx.font = '600 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+      lines.forEach((line, index) => ctx.fillText(line, this.width / 2, y + 70 + index * 24));
     }
   };
 
@@ -570,7 +1035,23 @@
   var DEBUG_BACKGROUND = false;
   var DEBUG_DYNAMIC_PASSTHROUGH = true;
   var FPS = 8;
+  var PET_RENDER_INTERVAL_MS = 1e3 / 24;
   var PET_SIZE_RATIO = 0.7;
+  var GAME_WINDOW_WIDTH = 360;
+  var GAME_WINDOW_HEIGHT = 696;
+  var DEFAULT_CANVAS_STRINGS = {
+    menuPlayGame: "Play a game",
+    menuClosePet: "Close pet",
+    gameHeader: "Flappy Finch",
+    gameTitle: "FlappyFinch",
+    gameStartHint: "Click / Space to fly",
+    gameBest: "BEST {best}",
+    gameOver: "Game Over",
+    gameResult: "Score {score}  ·  Best {best}",
+    gameRestartHint: "Click to play again",
+    loadingPet: "Loading pet…",
+    spriteLoadFailed: "Failed to load spritesheet"
+  };
   var postToHost = (message) => finch.postMessage(message);
   var PetCanvasApp = class {
     canvas;
@@ -578,6 +1059,8 @@
     w = 0;
     h = 0;
     t = 0;
+    /** 合并高刷新率显示器上的连续 rAF，降低透明窗口的清屏与合成开销。 */
+    pendingFrameMs = 0;
     image;
     loaded = false;
     error = "";
@@ -607,6 +1090,8 @@
     dragVelocity = { x: 0, y: 0 };
     dragContentBounds = null;
     displays = [];
+    /** 显示器布局变化前可复用，避免拖拽期间每帧重复进行 O(n²) 接缝扫描。 */
+    displaySeams = [];
     dragDirection = "";
     dragAnimationBlocked = false;
     dragIdleTimer = 0;
@@ -641,22 +1126,58 @@
     scale = 0.72;
     petName = "Pet";
     clickThrough = false;
+    gameActive = false;
+    gameDragging = false;
+    gameDragStartScreenX = 0;
+    gameDragStartScreenY = 0;
+    gameDragWindowX = 0;
+    gameDragWindowY = 0;
+    transitionFromOpacity = 1;
+    transitionToOpacity = 1;
+    transitionFromScale = 1;
+    transitionToScale = 1;
+    transitionStartedAt = 0;
+    transitionDurationMs = 0;
+    strings = DEFAULT_CANVAS_STRINGS;
+    game = new FlappyBirdGame(() => postToHost({
+      type: "exitGame",
+      x: window.screenX,
+      y: window.screenY
+    }), this.strings);
     hitCanvas;
     hitCtx = null;
-    contextMenu = new PetContextMenu(() => postToHost({ type: "exitPet" }));
+    /** 当前动画帧的 alpha 蒙版；指针移动时直接查数组，避免同步 GPU 像素读取。 */
+    hitAlpha = null;
+    hitFrameRow = -1;
+    hitFrameIndex = -1;
+    contextMenu = new PetContextMenu(
+      () => this.requestGameOpen(),
+      () => postToHost({ type: "exitPet" }),
+      this.strings
+    );
     domPointerInstalled = false;
+    /** DOM contextmenu 与 Canvas shell 右键事件去重，避免后者用不同坐标覆盖菜单位置。 */
+    lastDomContextMenuAt = 0;
+    applyStrings(strings) {
+      this.strings = strings;
+      this.game.setStrings(strings);
+      this.contextMenu.setStrings(strings);
+      if (this.error) this.error = strings.spriteLoadFailed;
+    }
     init({ canvas, ctx2d, width, height, initialData }) {
       this.canvas = canvas;
       this.c = ctx2d;
       this.w = width;
       this.h = height;
       const data = initialData || {};
+      this.applyStrings(data.strings || DEFAULT_CANVAS_STRINGS);
       const layout = data.layout || {};
       this.expandedHeight = typeof layout.expandedHeight === "number" ? layout.expandedHeight : height;
       this.fixedPetCenterX = typeof layout.petCenterX === "number" ? layout.petCenterX : 240;
       this.petAnchorX = this.fixedPetCenterX;
-      this.displays = this.readDisplays();
+      this.refreshDisplays();
       this.clickThrough = data.initialClickThrough === true;
+      this.gameActive = data.initialGameMode === true;
       const pet = data.pet || {};
       this.petName = pet.displayName || pet.name || data.petName || "Pet";
       this.scale = pet.finch && typeof pet.finch.scale === "number" ? pet.finch.scale : 0.72;
@@ -672,14 +1193,20 @@
         this.validateRestingPosition();
       };
       this.image.onerror = () => {
-        this.error = "spritesheet 加载失败";
+        this.error = this.strings.spriteLoadFailed;
       };
       this.image.src = data.spriteDataUrl || "";
       this.installDomPointerFallback();
+      if (this.gameActive) {
+        this.game.resize(this.w, this.h);
+        this.game.reset();
+        this.setPointerPassthrough(false);
+      }
     }
     resize(width, height) {
       this.w = width;
       this.h = height;
+      this.game.resize(width, height);
       this.frame(0);
     }
     cancelMouseAction() {
@@ -717,7 +1244,7 @@
       const petHalf = info.drawW / 2 + 16;
       const clampAnchor = (anchor) => Math.min(Math.max(anchor, petHalf), width - petHalf);
       const centerAbs = virtualX + this.fixedPetCenterX;
-      for (const seam of verticalSeams(this.displays)) {
+      for (const seam of this.displaySeams) {
         if (virtualX >= seam || virtualX + width <= seam) continue;
         let side = this.seamHold?.seam === seam ? this.seamHold.side : centerAbs >= seam ? "right" : "left";
         if (side === "left" && centerAbs - petHalf >= seam) side = "right";
@@ -980,7 +1507,7 @@
       if (this.dragging || this.inertiaFrameId !== null) return;
       const virtualX = window.screenX + this.petAnchorX - this.fixedPetCenterX;
       const virtualY = window.screenY;
-      this.displays = this.readDisplays();
+      this.refreshDisplays();
       const constrained = constrainWindowPosition(
         { x: virtualX, y: virtualY },
         this.currentDragContentBounds(),
@@ -989,6 +1516,10 @@
       if (constrained.x !== virtualX || constrained.y !== virtualY) {
         this.applyWindowPosition(constrained.x, constrained.y);
       }
+    }
+    refreshDisplays() {
+      this.displays = this.readDisplays();
+      this.displaySeams = verticalSeams(this.displays);
     }
     readDisplays() {
       const fromBridge = finch.window && typeof finch.window.getDisplays === "function" ? finch.window.getDisplays() : [];
@@ -1070,27 +1601,47 @@
       if (preserveLayout !== true) this.bubblePlacement = "top-left";
     }
     frame(dt) {
-      this.t += dt / 1e3;
+      const now = performance.now();
+      const transitionActive = this.transitionDurationMs > 0 && now - this.transitionStartedAt < this.transitionDurationMs;
+      this.pendingFrameMs += dt;
+      if (dt > 0 && !this.gameActive && !transitionActive && this.pendingFrameMs < PET_RENDER_INTERVAL_MS) return;
+      const renderDt = this.pendingFrameMs;
+      this.pendingFrameMs = 0;
+      this.t += renderDt / 1e3;
       const c = this.c;
       c.clearRect(0, 0, this.w, this.h);
+      const transitionProgress = this.transitionDurationMs > 0 ? Math.min(1, (now - this.transitionStartedAt) / this.transitionDurationMs) : 1;
+      const eased = 1 - Math.pow(1 - transitionProgress, 3);
+      const opacity = this.transitionFromOpacity + (this.transitionToOpacity - this.transitionFromOpacity) * eased;
+      const visualScale = this.transitionFromScale + (this.transitionToScale - this.transitionFromScale) * eased;
+      c.save();
+      c.globalAlpha = Math.max(0, Math.min(1, opacity));
+      c.translate(this.w / 2, this.h / 2);
+      c.scale(visualScale, visualScale);
+      c.translate(-this.w / 2, -this.h / 2);
+      if (this.gameActive) {
+        this.game.frame(c, renderDt);
+        c.restore();
+        return;
+      }
       if (DEBUG_BACKGROUND) {
         c.save();
         c.fillStyle = "rgba(255, 0, 0, 0.28)";
         c.fillRect(0, 0, this.w, this.h);
         c.restore();
       }
-      const now = performance.now();
       if (this.transientUntil && now > this.transientUntil)
         this.setState("idle", { source: this.stateOwner || "system" });
       if (!this.bubblePersistent && this.bubbleUntil && now > this.bubbleUntil) this.clearBubble();
       if (!this.loaded) {
-        drawLoading(c, this.w, this.h, this.error || "加载宠物中…");
+        drawLoading(c, this.w, this.h, this.error || this.strings.loadingPet);
+        c.restore();
         return;
       }
       const spec = STATES[this.state] || STATES.idle;
       const frameMs = 1e3 / FPS;
       const frameCount = this.frameCountForRow(spec.row);
-      this.frameAccum += dt;
+      this.frameAccum += renderDt;
       while (this.frameAccum >= frameMs) {
         this.frameAccum -= frameMs;
         if (this.frameIndex >= frameCount - 1) {
@@ -1106,6 +1657,7 @@
       const drawInfo = this.currentPetDrawInfo(drawSpec.row, this.frameCountForRow(drawSpec.row));
       if (this.image) drawPetFrame(c, { image: this.image, ...drawInfo });
       this.drawBubble(drawInfo);
+      c.restore();
     }
     frameCountForRow(row) {
       const index = Math.max(0, Math.min(ROWS - 1, row));
@@ -1175,19 +1727,26 @@
           this.hitCtx = this.hitCanvas.getContext("2d", { willReadFrequently: true });
         }
         if (!this.hitCtx) return true;
-        this.hitCtx.clearRect(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
-        this.hitCtx.drawImage(
-          this.image,
-          info.sx,
-          info.sy,
-          info.sourceW,
-          info.sourceH,
-          0,
-          0,
-          BASE_FRAME_WIDTH,
-          BASE_FRAME_HEIGHT
-        );
-        return this.hitCtx.getImageData(localX, localY, 1, 1).data[3] > 8;
+        const row = Math.max(0, Math.min(ROWS - 1, spec.row));
+        const frameIndex = Math.min(this.frameIndex, this.frameCountForRow(row) - 1);
+        if (!this.hitAlpha || row !== this.hitFrameRow || frameIndex !== this.hitFrameIndex) {
+          this.hitCtx.clearRect(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
+          this.hitCtx.drawImage(
+            this.image,
+            info.sx,
+            info.sy,
+            info.sourceW,
+            info.sourceH,
+            0,
+            0,
+            BASE_FRAME_WIDTH,
+            BASE_FRAME_HEIGHT
+          );
+          this.hitAlpha = this.hitCtx.getImageData(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT).data;
+          this.hitFrameRow = row;
+          this.hitFrameIndex = frameIndex;
+        }
+        return this.hitAlpha[(localY * BASE_FRAME_WIDTH + localX) * 4 + 3] > 8;
       } catch {
         return true;
       }
@@ -1201,6 +1760,10 @@
     }
     updatePointerPassthrough(e) {
       if (!DEBUG_DYNAMIC_PASSTHROUGH) return;
+      if (this.contextMenu.isOpen) {
+        this.setPointerPassthrough(false);
+        return;
+      }
       if (this.dragging || this.inertiaFrameId !== null) {
         this.setPointerPassthrough(false);
         return;
@@ -1212,6 +1775,29 @@
     showContextMenu(x, y) {
       this.setPointerPassthrough(false);
       this.contextMenu.show(x, y);
+    }
+    requestGameOpen() {
+      const originalX = window.screenX;
+      const originalY = window.screenY;
+      const centerX = originalX + this.w / 2;
+      const centerY = originalY + this.h / 2;
+      const displays = this.readDisplays();
+      const display = displays.find(
+        (item) => centerX >= item.bounds.x && centerX < item.bounds.x + item.bounds.width && centerY >= item.bounds.y && centerY < item.bounds.y + item.bounds.height
+      ) || displays[0];
+      const area = display?.workArea || {
+        x: 0,
+        y: 0,
+        width: window.screen.availWidth,
+        height: window.screen.availHeight
+      };
+      postToHost({
+        type: "enterGame",
+        originalX,
+        originalY,
+        centeredX: Math.round(area.x + (area.width - GAME_WINDOW_WIDTH) / 2),
+        centeredY: Math.round(area.y + (area.height - GAME_WINDOW_HEIGHT) / 2)
+      });
     }
     installDomPointerFallback() {
       if (this.domPointerInstalled) return;
@@ -1234,17 +1820,51 @@
           const event = e;
           event.preventDefault();
           event.stopPropagation();
-          if (this.isPointOnPet(event.clientX, event.clientY))
+          if (this.isPointOnPet(event.clientX, event.clientY)) {
+            this.lastDomContextMenuAt = performance.now();
             this.showContextMenu(event.clientX, event.clientY);
+          }
         },
         true
       );
-      target.addEventListener("pointerdown", (e) => send("down", e), true);
+      target.addEventListener("pointerdown", (e) => {
+        const pointer = e;
+        if (this.gameActive && (this.game.isDragHandle(pointer.clientX, pointer.clientY) || this.game.isCloseButtonPoint(pointer.clientX, pointer.clientY))) {
+          try {
+            this.canvas.setPointerCapture(pointer.pointerId);
+          } catch {
+          }
+        }
+        send("down", pointer);
+      }, true);
       target.addEventListener("pointermove", (e) => send("move", e), true);
-      window.addEventListener("pointerup", (e) => send("up", e), true);
+      window.addEventListener("pointerup", (e) => {
+        const pointer = e;
+        try {
+          if (this.canvas.hasPointerCapture(pointer.pointerId)) this.canvas.releasePointerCapture(pointer.pointerId);
+        } catch {
+        }
+        send("up", pointer);
+      }, true);
+      window.addEventListener("blur", () => {
+        this.gameDragging = false;
+        if (this.gameActive) {
+          this.canvas.style.cursor = "default";
+          this.game.cancelPointer();
+        }
+        if (this.contextMenu.isOpen) {
+          this.contextMenu.hide();
+          this.setPointerPassthrough(true);
+        }
+      });
       window.addEventListener(
         "keydown",
         (e) => {
+          if (this.gameActive && this.game.keyDown(e.key)) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
           if (e.key === "Escape") this.contextMenu.hide();
         },
         true
@@ -1270,10 +1890,44 @@
       postToHost({ type: "poke", state: this.state });
     }
     onPointer(e) {
+      if (this.gameActive) {
+        this.setPointerPassthrough(false);
+        const screenX = typeof e.screenX === "number" ? e.screenX : window.screenX + e.x;
+        const screenY = typeof e.screenY === "number" ? e.screenY : window.screenY + e.y;
+        if (e.type === "down" && (e.button === void 0 || e.button === 0)) {
+          if (this.game.isDragHandle(e.x, e.y)) {
+            this.gameDragging = true;
+            this.gameDragStartScreenX = screenX;
+            this.gameDragStartScreenY = screenY;
+            this.gameDragWindowX = window.screenX;
+            this.gameDragWindowY = window.screenY;
+            this.canvas.style.cursor = "grabbing";
+          } else {
+            this.game.pointerDown(e.x, e.y);
+          }
+        } else if (e.type === "move") {
+          this.game.pointerMove(e.x, e.y);
+          if (this.gameDragging) {
+            finch.window?.setPosition(
+              this.gameDragWindowX + screenX - this.gameDragStartScreenX,
+              this.gameDragWindowY + screenY - this.gameDragStartScreenY
+            );
+            this.canvas.style.cursor = "grabbing";
+          } else {
+            this.canvas.style.cursor = this.game.cursorAt(e.x, e.y);
+          }
+        } else if (e.type === "up") {
+          this.gameDragging = false;
+          this.game.pointerUp(e.x, e.y);
+          this.canvas.style.cursor = this.game.cursorAt(e.x, e.y);
+        }
+        return;
+      }
       if (e.type === "move") this.updatePointerPassthrough(e);
       if (e.type === "down") {
         if (typeof e.button === "number" && e.button === 2) {
-          if (this.isPointOnPet(e.x, e.y)) this.showContextMenu(e.x, e.y);
+          if (performance.now() - this.lastDomContextMenuAt > 160 && this.isPointOnPet(e.x, e.y))
+            this.showContextMenu(e.x, e.y);
           return;
         }
         this.contextMenu.hide();
@@ -1304,7 +1958,7 @@
         this.dragDirection = "";
         this.dragAnimationBlocked = this.isAgentAnimationActive();
         this.dragContentBounds = this.currentDragContentBounds();
-        this.displays = this.readDisplays();
+        this.refreshDisplays();
         this.clearDragIdleTimer();
         this.restoreDragCursor();
         return;
@@ -1383,6 +2037,30 @@
         this.clearBubble();
       } else if (msg.type === "config" && typeof msg.scale === "number") {
         this.scale = msg.scale;
+      } else if (msg.type === "prepareGame") {
+        this.requestGameOpen();
+      } else if (msg.type === "locale") {
+        this.applyStrings(msg.strings);
+      } else if (msg.type === "visualTransition") {
+        this.transitionFromOpacity = msg.fromOpacity;
+        this.transitionToOpacity = msg.toOpacity;
+        this.transitionFromScale = msg.fromScale;
+        this.transitionToScale = msg.toScale;
+        this.transitionStartedAt = performance.now();
+        this.transitionDurationMs = Math.max(0, msg.durationMs);
+      } else if (msg.type === "gameMode") {
+        this.gameActive = msg.active;
+        this.gameDragging = false;
+        this.game.cancelPointer();
+        this.canvas.style.cursor = "default";
+        this.contextMenu.hide();
+        this.setPointerPassthrough(false);
+        if (msg.active) {
+          this.cancelMouseAction();
+          this.clearBubble();
+          this.game.resize(this.w, this.h);
+          this.game.reset();
+        }
       }
     }
   };

@@ -5,6 +5,37 @@
   "toolMeta": {
     "name": "Finch Pet"
   },
+  "contributes": {
+    "settingsMenu": {
+      "tooltip": "Pet and game controls"
+    }
+  },
+  "settingsMenu": {
+    "playGame": "Play Flappy Bird",
+    "exitGame": "Exit game",
+    "playing": "Playing",
+    "showPet": "Show pet",
+    "hidePet": "Hide pet"
+  },
+  "canvas": {
+    "menu": {
+      "playGame": "Play a game",
+      "closePet": "Close pet"
+    },
+    "game": {
+      "header": "Flappy Finch",
+      "title": "FlappyFinch",
+      "startHint": "Click / Space to fly",
+      "best": "BEST {best}",
+      "over": "Game Over",
+      "result": "Score {score}  ·  Best {best}",
+      "restartHint": "Click to play again"
+    },
+    "pet": {
+      "loading": "Loading pet…",
+      "spriteLoadFailed": "Failed to load pet image"
+    }
+  },
   "composerActions": {
     "pet-toggle": {
       "tooltip": "Control desktop pet",

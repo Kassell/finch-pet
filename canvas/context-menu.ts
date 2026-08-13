@@ -1,21 +1,45 @@
 /** 右键菜单(DOM 悬浮层)。 */
+import type { CanvasStrings } from "../src/protocol.js";
 
 export class PetContextMenu {
   private element: HTMLDivElement | undefined;
   private opened = false;
+  private playItem: HTMLButtonElement | undefined;
+  private closeItem: HTMLButtonElement | undefined;
 
-  constructor(private readonly onExitPet: () => void) {}
+  constructor(
+    private readonly onPlayGame: () => void,
+    private readonly onExitPet: () => void,
+    private strings: CanvasStrings,
+  ) {}
 
   get isOpen(): boolean {
     return this.opened;
+  }
+
+  setStrings(strings: CanvasStrings): void {
+    this.strings = strings;
+    if (this.playItem) this.playItem.textContent = strings.menuPlayGame;
+    if (this.closeItem) this.closeItem.textContent = strings.menuClosePet;
   }
 
   show(x: number, y: number): void {
     const menu = this.ensureElement();
     menu.style.display = "block";
     const rect = menu.getBoundingClientRect();
-    const left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
-    const top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8));
+    const edge = 8;
+    const pointerGap = 4;
+
+    // 优先向右下展开；空间不足时逐轴翻转，让指针始终贴近菜单四角之一。
+    const opensRight = x + pointerGap + rect.width <= window.innerWidth - edge
+      || x - pointerGap - rect.width < edge;
+    const opensDown = y + pointerGap + rect.height <= window.innerHeight - edge
+      || y - pointerGap - rect.height < edge;
+    const anchoredLeft = opensRight ? x + pointerGap : x - pointerGap - rect.width;
+    const anchoredTop = opensDown ? y + pointerGap : y - pointerGap - rect.height;
+    const left = Math.max(edge, Math.min(anchoredLeft, window.innerWidth - rect.width - edge));
+    const top = Math.max(edge, Math.min(anchoredTop, window.innerHeight - rect.height - edge));
+
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
     this.opened = true;
@@ -43,10 +67,22 @@ export class PetContextMenu {
     menu.style.color = "#231f20";
     menu.style.display = "none";
     menu.style.pointerEvents = "auto";
-    menu.appendChild(this.makeItem("关闭桌宠", () => this.onExitPet()));
+    this.playItem = this.makeItem(this.strings.menuPlayGame, () => this.onPlayGame());
+    this.closeItem = this.makeItem(this.strings.menuClosePet, () => this.onExitPet());
+    menu.appendChild(this.playItem);
+    menu.appendChild(this.makeSeparator());
+    menu.appendChild(this.closeItem);
     document.body.appendChild(menu);
     this.element = menu;
     return menu;
+  }
+
+  private makeSeparator(): HTMLDivElement {
+    const separator = document.createElement("div");
+    separator.style.height = "1px";
+    separator.style.margin = "5px 6px";
+    separator.style.background = "rgba(0,0,0,0.08)";
+    return separator;
   }
 
   private makeItem(label: string, onClick: () => void): HTMLButtonElement {

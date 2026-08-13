@@ -13,7 +13,7 @@ export interface CanvasDisplayInfo {
 }
 
 export interface FinchCanvasWindowApi {
-  setAlwaysOnTop(value: boolean): void;
+  setAlwaysOnTop(value: boolean, level?: "normal" | "floating", relativeLevel?: number): void;
   setPosition(x: number, y: number): void;
   getDisplays(): CanvasDisplayInfo[];
   setClickThrough(value: boolean): void;

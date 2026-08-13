@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type * as finch from 'finch';
-import { isCanvasToHostMessage, PET_STATES, parsePetState, type HostToCanvasMessage } from './protocol.js';
+import { isCanvasToHostMessage, PET_STATES, parsePetState, type CanvasStrings, type HostToCanvasMessage } from './protocol.js';
 import type { WindowPosition } from './types.js';
 import { safePetName } from './utils.js';
 import { exists } from './pet-package.js';
@@ -53,7 +53,20 @@ function isVersionAtLeast(version: string, minimum: readonly [number, number, nu
   return true;
 }
 
-export function registerPetExtension(ctx: finch.ExtensionContext) {
+export function registerPetExtension(ctx: finch.MiniToolContext) {
+  const canvasStrings = (): CanvasStrings => ({
+    menuPlayGame: ctx.i18n.t('canvas.menu.playGame'),
+    menuClosePet: ctx.i18n.t('canvas.menu.closePet'),
+    gameHeader: ctx.i18n.t('canvas.game.header'),
+    gameTitle: ctx.i18n.t('canvas.game.title'),
+    gameStartHint: ctx.i18n.t('canvas.game.startHint'),
+    gameBest: ctx.i18n.t('canvas.game.best'),
+    gameOver: ctx.i18n.t('canvas.game.over'),
+    gameResult: ctx.i18n.t('canvas.game.result'),
+    gameRestartHint: ctx.i18n.t('canvas.game.restartHint'),
+    loadingPet: ctx.i18n.t('canvas.pet.loading'),
+    spriteLoadFailed: ctx.i18n.t('canvas.pet.spriteLoadFailed'),
+  });
   ctx.subscriptions.push(
     ctx.icons.register('finch-pet', {
       action: { svg: readIconSvg('action'), description: 'Desktop pet action' },
@@ -63,9 +76,19 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
   const canvasWidth = 480;
   const compactCanvasHeight = 184;
   const expandedCanvasHeight = 260;
+  const gameCanvasWidth = 360;
+  /** 56px 独立状态栏 + 360×640 的 9:16 游戏内容区。 */
+  const gameCanvasHeight = 696;
   const rightAlignedPetCenterX = 240;
   const legacyCanvasWidth = 240;
   let petWindow: finch.CanvasWindow | undefined;
+  let petToggleAction: (finch.Disposable & { notifyUpdate(): void }) | undefined;
+  let settingsMenu: (finch.Disposable & { notifyUpdate(): void }) | undefined;
+  let gameActive = false;
+  let gameTransitioning = false;
+  let transitionGeneration = 0;
+  let preGamePosition: WindowPosition | undefined;
+  let gameWindowPosition: WindowPosition | undefined;
   // 窗口尺寸固定为展开画布，气泡布局切换全部在画布内完成，避免透明窗口
   // setBounds 与重画不同步导致的闪帧。持久化位置仍按 compact 基准存储以兼容旧数据。
   let canvasHeight = expandedCanvasHeight;
@@ -93,7 +116,7 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
   };
 
   const customPetsRoot = join(ctx.storagePath, 'pets');
-  const builtinPetsRoot = join(ctx.extension.extensionPath, 'pets');
+  const builtinPetsRoot = join(ctx.minitool.extensionPath, 'pets');
   const registry = new PetRegistryStore(ctx.storagePath);
 
   const library = createPetLibrary({ ctx, builtinPetsRoot, customPetsRoot, registry });
@@ -125,6 +148,11 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
   };
 
   const close = () => {
+    transitionGeneration += 1;
+    gameTransitioning = false;
+    gameActive = false;
+    preGamePosition = undefined;
+    gameWindowPosition = undefined;
     runtime.resetForClose();
     clearPositionSaveTimer();
     petWindow?.dispose();
@@ -156,6 +184,7 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
       x: migratedX,
       y: migratedY,
       alwaysOnTop: true,
+      alwaysOnTopLevel: 'floating',
       transparent: true,
       clickThrough: true,
       // 头顶气泡预留区是透明的，需要允许窗口顶越过菜单栏，宠物本体才能贴到屏幕顶。
@@ -174,6 +203,7 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
         defaultState: 'idle',
         initialClickThrough: true,
         message: '',
+        strings: canvasStrings(),
         layout: { expandedHeight: expandedCanvasHeight, petCenterX: rightAlignedPetCenterX },
       },
     });
@@ -186,23 +216,40 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
       if ((event?.type === 'openBubbleSession' || (event?.type === 'bubbleAction' && event.action === 'open-session')) && event.sessionId) {
         void openSession(event.sessionId).catch((err: unknown) => ctx.logger.warn('open pet session failed', err instanceof Error ? err.message : String(err)));
       }
-      if (event?.type === 'exitPet') {
+      if (event?.type === 'enterGame') {
+        void enterGame(
+          { x: event.originalX, y: event.originalY },
+          { x: event.centeredX, y: event.centeredY },
+        );
+      } else if (event?.type === 'exitGame') {
+        void exitGame({ x: event.x, y: event.y });
+      } else if (event?.type === 'exitPet') {
         void setVisiblePreference(false);
         close();
       }
     });
     await ctx.storage.set('window.canvasWidth', canvasWidth);
     petWindow.onDidMove((pos) => {
+      if (gameActive || gameTransitioning) {
+        gameWindowPosition = pos;
+        return;
+      }
       windowPosition = pos;
       schedulePositionSave();
     });
     petWindow.onDidResize((size) => {
+      if (gameActive || gameTransitioning) return;
       canvasHeight = size.height;
       schedulePositionSave();
     });
     petWindow.onDidDispose(() => {
       clearPositionSaveTimer();
       petWindow = undefined;
+      transitionGeneration += 1;
+      gameTransitioning = false;
+      gameActive = false;
+      preGamePosition = undefined;
+      gameWindowPosition = undefined;
       windowPosition = undefined;
       canvasHeight = expandedCanvasHeight;
       petCenterX = rightAlignedPetCenterX;
@@ -211,6 +258,100 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
     runtime.prepareForWindowOpen();
     void ctx.status.get().then(runtime.applyRuntimeStatus).catch((err: unknown) => ctx.logger.warn('sync pet runtime status failed', err instanceof Error ? err.message : String(err)));
     return petWindow;
+  };
+
+  const waitForTransition = async (durationMs: number) => {
+    const win = petWindow;
+    if (!win) return false;
+    const generation = ++transitionGeneration;
+    await new Promise<void>((resolve) => setTimeout(resolve, durationMs));
+    return !!petWindow && petWindow === win && generation === transitionGeneration;
+  };
+
+  const runVisualTransition = async (input: {
+    fromOpacity: number;
+    toOpacity: number;
+    fromScale: number;
+    toScale: number;
+    durationMs: number;
+  }) => {
+    if (!petWindow) return false;
+    await petWindow.postMessage({ type: 'visualTransition', ...input });
+    return waitForTransition(input.durationMs);
+  };
+
+  const enterGame = async (originalPosition: WindowPosition, centeredPosition: WindowPosition) => {
+    if (!petWindow || gameActive || gameTransitioning) return;
+    preGamePosition = { ...originalPosition };
+    gameWindowPosition = { ...originalPosition };
+    gameTransitioning = true;
+    petWindow.setClickThrough(false);
+    const petHidden = await runVisualTransition({
+      fromOpacity: 1,
+      toOpacity: 0,
+      fromScale: 1,
+      toScale: 1,
+      durationMs: 150,
+    });
+    if (!petHidden || !petWindow) {
+      gameTransitioning = false;
+      return;
+    }
+    gameActive = true;
+    // 同一个 CanvasWindow 在游戏态降低到 macOS normal 层级。
+    petWindow.setAlwaysOnTop(true, 'normal');
+    petWindow.setSize(gameCanvasWidth, gameCanvasHeight);
+    petWindow.setPosition(centeredPosition.x, centeredPosition.y);
+    await petWindow.postMessage({ type: 'gameMode', active: true });
+    const completed = await runVisualTransition({
+      fromOpacity: 0,
+      toOpacity: 1,
+      fromScale: 0.88,
+      toScale: 1,
+      durationMs: 210,
+    });
+    if (completed) gameWindowPosition = { ...centeredPosition };
+    gameTransitioning = false;
+    petToggleAction?.notifyUpdate();
+    settingsMenu?.notifyUpdate();
+  };
+
+  const exitGame = async (currentPosition?: WindowPosition) => {
+    if (!petWindow || !gameActive || gameTransitioning || !preGamePosition) return;
+    gameTransitioning = true;
+    gameWindowPosition = currentPosition || gameWindowPosition;
+    const destination = preGamePosition;
+    const gameHidden = await runVisualTransition({
+      fromOpacity: 1,
+      toOpacity: 0,
+      fromScale: 1,
+      toScale: 0.82,
+      durationMs: 160,
+    });
+    if (!gameHidden || !petWindow) {
+      gameTransitioning = false;
+      return;
+    }
+    petWindow.setSize(canvasWidth, expandedCanvasHeight);
+    petWindow.setPosition(destination.x, destination.y);
+    // 回到桌宠态时恢复 macOS floating 层级。
+    petWindow.setAlwaysOnTop(true, 'floating');
+    gameActive = false;
+    windowPosition = { ...destination };
+    preGamePosition = undefined;
+    gameWindowPosition = undefined;
+    canvasHeight = expandedCanvasHeight;
+    await petWindow.postMessage({ type: 'gameMode', active: false });
+    await runVisualTransition({
+      fromOpacity: 0,
+      toOpacity: 1,
+      fromScale: 1,
+      toScale: 1,
+      durationMs: 190,
+    });
+    gameTransitioning = false;
+    petToggleAction?.notifyUpdate();
+    settingsMenu?.notifyUpdate();
   };
 
   const reopenIfVisible = async () => { if (petWindow) { close(); await open(); } };
@@ -323,12 +464,12 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
       const result = await mcp.registerServer({
         name: serverName,
         command: process.execPath,
-        args: [join(ctx.extension.extensionPath, 'dist', 'mcp-server.js')],
-        cwd: ctx.extension.extensionPath,
+        args: [join(ctx.minitool.extensionPath, 'dist', 'mcp-server.js')],
+        cwd: ctx.minitool.extensionPath,
         description: 'Manage the local Finch Pet library. Tools are discovered lazily through MCP.',
         env: { ELECTRON_RUN_AS_NODE: '1' },
-        ownerExtensionId: ctx.extension.id,
-        ownerExtensionName: ctx.extension.displayName,
+        ownerExtensionId: ctx.minitool.id,
+        ownerExtensionName: ctx.minitool.displayName,
       });
       if (!result.ok) {
         ctx.logger.warn('register pet MCP server failed', result.error ?? 'unknown error');
@@ -361,7 +502,7 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
     if (result.action === 'action') await actions.composer.fill(ctx.i18n.t('composerActions.pet-toggle.installPrompt'));
   };
 
-  const petToggleAction = ctx.composerActions.register('pet-toggle', {
+  petToggleAction = ctx.composerActions.register('pet-toggle', {
     async getBadge() {
       return { text: 'Finch Pet', active: !!petWindow };
     },
@@ -429,12 +570,46 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
       } else if (itemId === 'install') {
         await actions.composer.fill(ctx.i18n.t('composerActions.pet-toggle.installPrompt'));
       }
-      petToggleAction.notifyUpdate();
+      petToggleAction?.notifyUpdate();
+    },
+  });
+
+  settingsMenu = ctx.settingsMenu.register({
+    async getMenu() {
+      return [
+        {
+          id: gameActive ? 'game:exit' : 'game:play',
+          label: ctx.i18n.t(`settingsMenu.${gameActive ? 'exitGame' : 'playGame'}`),
+          iconName: 'gamepad-2',
+          description: gameActive ? ctx.i18n.t('settingsMenu.playing') : undefined,
+        },
+        {
+          id: petWindow ? 'pet:hide' : 'pet:show',
+          label: ctx.i18n.t(`settingsMenu.${petWindow ? 'hidePet' : 'showPet'}`),
+          iconName: petWindow ? 'toggle-right' : 'toggle-left',
+        },
+      ];
+    },
+    async execute(_context, itemId) {
+      if (itemId === 'game:play') {
+        const win = await showPet();
+        await win.postMessage({ type: 'prepareGame' });
+      } else if (itemId === 'game:exit') {
+        await exitGame();
+      } else if (itemId === 'pet:show') {
+        await showPet();
+      } else if (itemId === 'pet:hide') {
+        await setVisiblePreference(false);
+        close();
+      }
+      petToggleAction?.notifyUpdate();
+      settingsMenu?.notifyUpdate();
     },
   });
 
   ctx.subscriptions.push(
     petToggleAction,
+    settingsMenu,
     managementIpc,
     ctx.tools.register({
       name: 'pet_control', title: 'Control desktop pet',
@@ -491,6 +666,9 @@ export function registerPetExtension(ctx: finch.ExtensionContext) {
     }),
     ctx.i18n.onDidChangeLocale((locale) => {
       void runtime.refreshRuntimeLocale(locale).catch((err: unknown) => ctx.logger.warn('refresh pet locale failed', err instanceof Error ? err.message : String(err)));
+      if (petWindow) void petWindow.postMessage({ type: 'locale', strings: canvasStrings() });
+      petToggleAction?.notifyUpdate();
+      settingsMenu?.notifyUpdate();
     }),
     { dispose: close },
   );

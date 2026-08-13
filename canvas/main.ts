@@ -11,6 +11,7 @@ import type { CanvasInitArgs, CanvasPointerEvent } from "./finch-canvas.js";
 import {
   isHostToCanvasMessage,
   type BubbleAction,
+  type CanvasStrings,
   type CanvasToHostMessage,
   type PetState,
   type PlayMode,
@@ -30,6 +31,7 @@ import {
 import { chooseBubblePlacement, layoutBubble, type BubbleActionLayout, type BubblePlacement } from "./bubble.js";
 import { drawLoading, drawPetFrame, paintBubble } from "./draw.js";
 import { PetContextMenu } from "./context-menu.js";
+import { FlappyBirdGame } from "./flappy-bird.js";
 import {
   DRAG_THRESHOLD,
   INERTIA_MAX_DURATION_MS,
@@ -49,8 +51,27 @@ const DEBUG_BACKGROUND = false;
 const DEBUG_DYNAMIC_PASSTHROUGH = true;
 /** 统一播放速度;每行动画实际帧数由图片透明像素探测决定,最多 8 帧。 */
 const FPS = 8;
+/** 普通桌宠无需跟随显示器刷新率全量重绘；游戏和视觉过渡仍保持原始 rAF 频率。 */
+const PET_RENDER_INTERVAL_MS = 1000 / 24;
 /** 宠物整体大小调节系数(1 = 原始基准框大小),与图片分辨率无关;气泡尺寸不受影响,锚点自动跟随。 */
 const PET_SIZE_RATIO = 0.7;
+const GAME_WINDOW_WIDTH = 360;
+/** 56px 独立状态栏 + 360×640 的 9:16 游戏内容区。 */
+const GAME_WINDOW_HEIGHT = 696;
+/** Canvas 即使由旧版 Host 启动也能完整显示的英文安全回退。 */
+const DEFAULT_CANVAS_STRINGS: CanvasStrings = {
+  menuPlayGame: "Play a game",
+  menuClosePet: "Close pet",
+  gameHeader: "Flappy Finch",
+  gameTitle: "FlappyFinch",
+  gameStartHint: "Click / Space to fly",
+  gameBest: "BEST {best}",
+  gameOver: "Game Over",
+  gameResult: "Score {score}  ·  Best {best}",
+  gameRestartHint: "Click to play again",
+  loadingPet: "Loading pet…",
+  spriteLoadFailed: "Failed to load spritesheet",
+};
 
 const postToHost = (message: CanvasToHostMessage): void => finch.postMessage(message);
 
@@ -82,6 +103,8 @@ interface PetInitialData {
   message?: string;
   spriteDataUrl?: string;
   initialClickThrough?: boolean;
+  initialGameMode?: boolean;
+  strings?: CanvasStrings;
 }
 
 class PetCanvasApp {
@@ -90,6 +113,8 @@ class PetCanvasApp {
   private w = 0;
   private h = 0;
   private t = 0;
+  /** 合并高刷新率显示器上的连续 rAF，降低透明窗口的清屏与合成开销。 */
+  private pendingFrameMs = 0;
 
   private image: HTMLImageElement | undefined;
   private loaded = false;
@@ -122,6 +147,8 @@ class PetCanvasApp {
   private dragVelocity: Velocity = { x: 0, y: 0 };
   private dragContentBounds: Rect | null = null;
   private displays: DisplayArea[] = [];
+  /** 显示器布局变化前可复用，避免拖拽期间每帧重复进行 O(n²) 接缝扫描。 */
+  private displaySeams: number[] = [];
   private dragDirection: "" | "left" | "right" = "";
   private dragAnimationBlocked = false;
   private dragIdleTimer: ReturnType<typeof setTimeout> | 0 = 0;
@@ -158,11 +185,46 @@ class PetCanvasApp {
   private scale = 0.72;
   private petName = "Pet";
   private clickThrough = false;
+  private gameActive = false;
+  private gameDragging = false;
+  private gameDragStartScreenX = 0;
+  private gameDragStartScreenY = 0;
+  private gameDragWindowX = 0;
+  private gameDragWindowY = 0;
+  private transitionFromOpacity = 1;
+  private transitionToOpacity = 1;
+  private transitionFromScale = 1;
+  private transitionToScale = 1;
+  private transitionStartedAt = 0;
+  private transitionDurationMs = 0;
+  private strings = DEFAULT_CANVAS_STRINGS;
+  private readonly game = new FlappyBirdGame(() => postToHost({
+    type: "exitGame",
+    x: window.screenX,
+    y: window.screenY,
+  }), this.strings);
 
   private hitCanvas: HTMLCanvasElement | undefined;
   private hitCtx: CanvasRenderingContext2D | null = null;
-  private readonly contextMenu = new PetContextMenu(() => postToHost({ type: "exitPet" }));
+  /** 当前动画帧的 alpha 蒙版；指针移动时直接查数组，避免同步 GPU 像素读取。 */
+  private hitAlpha: Uint8ClampedArray | null = null;
+  private hitFrameRow = -1;
+  private hitFrameIndex = -1;
+  private readonly contextMenu = new PetContextMenu(
+    () => this.requestGameOpen(),
+    () => postToHost({ type: "exitPet" }),
+    this.strings,
+  );
   private domPointerInstalled = false;
+  /** DOM contextmenu 与 Canvas shell 右键事件去重，避免后者用不同坐标覆盖菜单位置。 */
+  private lastDomContextMenuAt = 0;
+
+  private applyStrings(strings: CanvasStrings): void {
+    this.strings = strings;
+    this.game.setStrings(strings);
+    this.contextMenu.setStrings(strings);
+    if (this.error) this.error = strings.spriteLoadFailed;
+  }
 
   init({ canvas, ctx2d, width, height, initialData }: CanvasInitArgs): void {
     this.canvas = canvas;
@@ -170,12 +232,14 @@ class PetCanvasApp {
     this.w = width;
     this.h = height;
     const data = (initialData || {}) as PetInitialData;
+    this.applyStrings(data.strings || DEFAULT_CANVAS_STRINGS);
     const layout = data.layout || {};
     this.expandedHeight = typeof layout.expandedHeight === "number" ? layout.expandedHeight : height;
     this.fixedPetCenterX = typeof layout.petCenterX === "number" ? layout.petCenterX : 240;
     this.petAnchorX = this.fixedPetCenterX;
-    this.displays = this.readDisplays();
+    this.refreshDisplays();
     this.clickThrough = data.initialClickThrough === true;
+    this.gameActive = data.initialGameMode === true;
     const pet = data.pet || {};
     this.petName = pet.displayName || pet.name || data.petName || "Pet";
     this.scale = pet.finch && typeof pet.finch.scale === "number" ? pet.finch.scale : 0.72;
@@ -192,15 +256,21 @@ class PetCanvasApp {
       this.validateRestingPosition();
     };
     this.image.onerror = () => {
-      this.error = "spritesheet 加载失败";
+      this.error = this.strings.spriteLoadFailed;
     };
     this.image.src = data.spriteDataUrl || "";
     this.installDomPointerFallback();
+    if (this.gameActive) {
+      this.game.resize(this.w, this.h);
+      this.game.reset();
+      this.setPointerPassthrough(false);
+    }
   }
 
   resize(width: number, height: number): void {
     this.w = width;
     this.h = height;
+    this.game.resize(width, height);
     // 跨到不同缩放比的屏幕时 devicePixelRatio 变化会触发 resize,shell 重设
     // canvas 尺寸已把画布清空;同步补画一帧,避免等到下一个 rAF 前闪白。
     this.frame(0);
@@ -243,7 +313,7 @@ class PetCanvasApp {
     const petHalf = info.drawW / 2 + 16;
     const clampAnchor = (anchor: number) => Math.min(Math.max(anchor, petHalf), width - petHalf);
     const centerAbs = virtualX + this.fixedPetCenterX;
-    for (const seam of verticalSeams(this.displays)) {
+    for (const seam of this.displaySeams) {
       if (virtualX >= seam || virtualX + width <= seam) continue;
       // 滞回选边:初次进入按宠物中心所在侧;之后只有宠物能完整渲染到
       // 对面(中心越过缝一个半身位)才换边,缝上小幅抖动不会来回翻面。
@@ -548,7 +618,7 @@ class PetCanvasApp {
     if (this.dragging || this.inertiaFrameId !== null) return;
     const virtualX = window.screenX + this.petAnchorX - this.fixedPetCenterX;
     const virtualY = window.screenY;
-    this.displays = this.readDisplays();
+    this.refreshDisplays();
     const constrained = constrainWindowPosition(
       { x: virtualX, y: virtualY },
       this.currentDragContentBounds(),
@@ -557,6 +627,11 @@ class PetCanvasApp {
     if (constrained.x !== virtualX || constrained.y !== virtualY) {
       this.applyWindowPosition(constrained.x, constrained.y);
     }
+  }
+
+  private refreshDisplays(): void {
+    this.displays = this.readDisplays();
+    this.displaySeams = verticalSeams(this.displays);
   }
 
   private readDisplays(): DisplayArea[] {
@@ -676,28 +751,52 @@ class PetCanvasApp {
   }
 
   frame(dt: number): void {
-    this.t += dt / 1000;
+    const now = performance.now();
+    const transitionActive = this.transitionDurationMs > 0
+      && now - this.transitionStartedAt < this.transitionDurationMs;
+    this.pendingFrameMs += dt;
+    // dt=0 是 resize / 锚点变化触发的同步补画，不得跳过。
+    if (dt > 0 && !this.gameActive && !transitionActive && this.pendingFrameMs < PET_RENDER_INTERVAL_MS) return;
+    const renderDt = this.pendingFrameMs;
+    this.pendingFrameMs = 0;
+    this.t += renderDt / 1000;
     const c = this.c;
     c.clearRect(0, 0, this.w, this.h);
+    const transitionProgress = this.transitionDurationMs > 0
+      ? Math.min(1, (now - this.transitionStartedAt) / this.transitionDurationMs)
+      : 1;
+    const eased = 1 - Math.pow(1 - transitionProgress, 3);
+    const opacity = this.transitionFromOpacity + (this.transitionToOpacity - this.transitionFromOpacity) * eased;
+    const visualScale = this.transitionFromScale + (this.transitionToScale - this.transitionFromScale) * eased;
+    c.save();
+    c.globalAlpha = Math.max(0, Math.min(1, opacity));
+    c.translate(this.w / 2, this.h / 2);
+    c.scale(visualScale, visualScale);
+    c.translate(-this.w / 2, -this.h / 2);
+    if (this.gameActive) {
+      this.game.frame(c, renderDt);
+      c.restore();
+      return;
+    }
     if (DEBUG_BACKGROUND) {
       c.save();
       c.fillStyle = "rgba(255, 0, 0, 0.28)";
       c.fillRect(0, 0, this.w, this.h);
       c.restore();
     }
-    const now = performance.now();
     if (this.transientUntil && now > this.transientUntil)
       this.setState("idle", { source: this.stateOwner || "system" });
     if (!this.bubblePersistent && this.bubbleUntil && now > this.bubbleUntil) this.clearBubble();
     if (!this.loaded) {
-      drawLoading(c, this.w, this.h, this.error || "加载宠物中…");
+      drawLoading(c, this.w, this.h, this.error || this.strings.loadingPet);
+      c.restore();
       return;
     }
 
     const spec = STATES[this.state] || STATES.idle;
     const frameMs = 1000 / FPS;
     const frameCount = this.frameCountForRow(spec.row);
-    this.frameAccum += dt;
+    this.frameAccum += renderDt;
     while (this.frameAccum >= frameMs) {
       this.frameAccum -= frameMs;
       if (this.frameIndex >= frameCount - 1) {
@@ -716,6 +815,7 @@ class PetCanvasApp {
     const drawInfo = this.currentPetDrawInfo(drawSpec.row, this.frameCountForRow(drawSpec.row));
     if (this.image) drawPetFrame(c, { image: this.image, ...drawInfo });
     this.drawBubble(drawInfo);
+    c.restore();
   }
 
   private frameCountForRow(row: number): number {
@@ -803,19 +903,26 @@ class PetCanvasApp {
         this.hitCtx = this.hitCanvas.getContext("2d", { willReadFrequently: true });
       }
       if (!this.hitCtx) return true;
-      this.hitCtx.clearRect(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
-      this.hitCtx.drawImage(
-        this.image,
-        info.sx,
-        info.sy,
-        info.sourceW,
-        info.sourceH,
-        0,
-        0,
-        BASE_FRAME_WIDTH,
-        BASE_FRAME_HEIGHT,
-      );
-      return this.hitCtx.getImageData(localX, localY, 1, 1).data[3] > 8;
+      const row = Math.max(0, Math.min(ROWS - 1, spec.row));
+      const frameIndex = Math.min(this.frameIndex, this.frameCountForRow(row) - 1);
+      if (!this.hitAlpha || row !== this.hitFrameRow || frameIndex !== this.hitFrameIndex) {
+        this.hitCtx.clearRect(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT);
+        this.hitCtx.drawImage(
+          this.image,
+          info.sx,
+          info.sy,
+          info.sourceW,
+          info.sourceH,
+          0,
+          0,
+          BASE_FRAME_WIDTH,
+          BASE_FRAME_HEIGHT,
+        );
+        this.hitAlpha = this.hitCtx.getImageData(0, 0, BASE_FRAME_WIDTH, BASE_FRAME_HEIGHT).data;
+        this.hitFrameRow = row;
+        this.hitFrameIndex = frameIndex;
+      }
+      return this.hitAlpha[(localY * BASE_FRAME_WIDTH + localX) * 4 + 3] > 8;
     } catch {
       return true;
     }
@@ -831,6 +938,11 @@ class PetCanvasApp {
 
   private updatePointerPassthrough(e: { x: number; y: number }): void {
     if (!DEBUG_DYNAMIC_PASSTHROUGH) return;
+    // DOM 菜单必须持续接收空白点击；打开期间禁止透明区重新穿透给系统。
+    if (this.contextMenu.isOpen) {
+      this.setPointerPassthrough(false);
+      return;
+    }
     if (this.dragging || this.inertiaFrameId !== null) {
       this.setPointerPassthrough(false);
       return;
@@ -843,6 +955,33 @@ class PetCanvasApp {
   private showContextMenu(x: number, y: number): void {
     this.setPointerPassthrough(false);
     this.contextMenu.show(x, y);
+  }
+
+  private requestGameOpen(): void {
+    const originalX = window.screenX;
+    const originalY = window.screenY;
+    const centerX = originalX + this.w / 2;
+    const centerY = originalY + this.h / 2;
+    const displays = this.readDisplays();
+    const display = displays.find((item) =>
+      centerX >= item.bounds.x
+      && centerX < item.bounds.x + item.bounds.width
+      && centerY >= item.bounds.y
+      && centerY < item.bounds.y + item.bounds.height,
+    ) || displays[0];
+    const area = display?.workArea || {
+      x: 0,
+      y: 0,
+      width: window.screen.availWidth,
+      height: window.screen.availHeight,
+    };
+    postToHost({
+      type: "enterGame",
+      originalX,
+      originalY,
+      centeredX: Math.round(area.x + (area.width - GAME_WINDOW_WIDTH) / 2),
+      centeredY: Math.round(area.y + (area.height - GAME_WINDOW_HEIGHT) / 2),
+    });
   }
 
   private installDomPointerFallback(): void {
@@ -867,17 +1006,50 @@ class PetCanvasApp {
         const event = e as MouseEvent;
         event.preventDefault();
         event.stopPropagation();
-        if (this.isPointOnPet(event.clientX, event.clientY))
+        if (this.isPointOnPet(event.clientX, event.clientY)) {
+          this.lastDomContextMenuAt = performance.now();
           this.showContextMenu(event.clientX, event.clientY);
+        }
       },
       true,
     );
-    target.addEventListener("pointerdown", (e) => send("down", e as MouseEvent), true);
+    target.addEventListener("pointerdown", (e) => {
+      const pointer = e as PointerEvent;
+      if (this.gameActive && (
+        this.game.isDragHandle(pointer.clientX, pointer.clientY)
+        || this.game.isCloseButtonPoint(pointer.clientX, pointer.clientY)
+      )) {
+        try { this.canvas.setPointerCapture(pointer.pointerId); } catch { /* shell 不支持时由 window pointerup 兜底。 */ }
+      }
+      send("down", pointer);
+    }, true);
     target.addEventListener("pointermove", (e) => send("move", e as MouseEvent), true);
-    window.addEventListener("pointerup", (e) => send("up", e), true);
+    window.addEventListener("pointerup", (e) => {
+      const pointer = e as PointerEvent;
+      try {
+        if (this.canvas.hasPointerCapture(pointer.pointerId)) this.canvas.releasePointerCapture(pointer.pointerId);
+      } catch { /* 忽略已自动释放的 capture。 */ }
+      send("up", pointer);
+    }, true);
+    window.addEventListener("blur", () => {
+      this.gameDragging = false;
+      if (this.gameActive) {
+        this.canvas.style.cursor = "default";
+        this.game.cancelPointer();
+      }
+      if (this.contextMenu.isOpen) {
+        this.contextMenu.hide();
+        this.setPointerPassthrough(true);
+      }
+    });
     window.addEventListener(
       "keydown",
       (e) => {
+        if (this.gameActive && this.game.keyDown(e.key)) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         if (e.key === "Escape") this.contextMenu.hide();
       },
       true,
@@ -906,11 +1078,46 @@ class PetCanvasApp {
   }
 
   onPointer(e: CanvasPointerEvent): void {
+    if (this.gameActive) {
+      this.setPointerPassthrough(false);
+      const screenX = typeof e.screenX === "number" ? e.screenX : window.screenX + e.x;
+      const screenY = typeof e.screenY === "number" ? e.screenY : window.screenY + e.y;
+      if (e.type === "down" && (e.button === undefined || e.button === 0)) {
+        if (this.game.isDragHandle(e.x, e.y)) {
+          this.gameDragging = true;
+          this.gameDragStartScreenX = screenX;
+          this.gameDragStartScreenY = screenY;
+          this.gameDragWindowX = window.screenX;
+          this.gameDragWindowY = window.screenY;
+          this.canvas.style.cursor = "grabbing";
+        } else {
+          this.game.pointerDown(e.x, e.y);
+        }
+      } else if (e.type === "move") {
+        this.game.pointerMove(e.x, e.y);
+        if (this.gameDragging) {
+          finch.window?.setPosition(
+            this.gameDragWindowX + screenX - this.gameDragStartScreenX,
+            this.gameDragWindowY + screenY - this.gameDragStartScreenY,
+          );
+          this.canvas.style.cursor = "grabbing";
+        } else {
+          this.canvas.style.cursor = this.game.cursorAt(e.x, e.y);
+        }
+      } else if (e.type === "up") {
+        this.gameDragging = false;
+        this.game.pointerUp(e.x, e.y);
+        this.canvas.style.cursor = this.game.cursorAt(e.x, e.y);
+      }
+      return;
+    }
     if (e.type === "move") this.updatePointerPassthrough(e);
 
     if (e.type === "down") {
       if (typeof e.button === "number" && e.button === 2) {
-        if (this.isPointOnPet(e.x, e.y)) this.showContextMenu(e.x, e.y);
+        // DOM contextmenu 提供可靠的 clientX/clientY；仅在它未触发时使用 shell 坐标兜底。
+        if (performance.now() - this.lastDomContextMenuAt > 160 && this.isPointOnPet(e.x, e.y))
+          this.showContextMenu(e.x, e.y);
         return;
       }
       this.contextMenu.hide();
@@ -942,7 +1149,7 @@ class PetCanvasApp {
       this.dragDirection = "";
       this.dragAnimationBlocked = this.isAgentAnimationActive();
       this.dragContentBounds = this.currentDragContentBounds();
-      this.displays = this.readDisplays();
+      this.refreshDisplays();
       this.clearDragIdleTimer();
       this.restoreDragCursor();
       return;
@@ -1029,6 +1236,30 @@ class PetCanvasApp {
       this.clearBubble();
     } else if (msg.type === "config" && typeof msg.scale === "number") {
       this.scale = msg.scale;
+    } else if (msg.type === "prepareGame") {
+      this.requestGameOpen();
+    } else if (msg.type === "locale") {
+      this.applyStrings(msg.strings);
+    } else if (msg.type === "visualTransition") {
+      this.transitionFromOpacity = msg.fromOpacity;
+      this.transitionToOpacity = msg.toOpacity;
+      this.transitionFromScale = msg.fromScale;
+      this.transitionToScale = msg.toScale;
+      this.transitionStartedAt = performance.now();
+      this.transitionDurationMs = Math.max(0, msg.durationMs);
+    } else if (msg.type === "gameMode") {
+      this.gameActive = msg.active;
+      this.gameDragging = false;
+      this.game.cancelPointer();
+      this.canvas.style.cursor = "default";
+      this.contextMenu.hide();
+      this.setPointerPassthrough(false);
+      if (msg.active) {
+        this.cancelMouseAction();
+        this.clearBubble();
+        this.game.resize(this.w, this.h);
+        this.game.reset();
+      }
     }
   }
 }

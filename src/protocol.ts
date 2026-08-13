@@ -26,6 +26,21 @@ export interface BubbleAction {
   sessionId: string;
 }
 
+/** Host 解析 ctx.i18n 后传给隔离 Canvas 的全部界面文案。 */
+export interface CanvasStrings {
+  menuPlayGame: string;
+  menuClosePet: string;
+  gameHeader: string;
+  gameTitle: string;
+  gameStartHint: string;
+  gameBest: string;
+  gameOver: string;
+  gameResult: string;
+  gameRestartHint: string;
+  loadingPet: string;
+  spriteLoadFailed: string;
+}
+
 /** Host → Canvas。 */
 export type HostToCanvasMessage =
   | {
@@ -48,7 +63,18 @@ export type HostToCanvasMessage =
       sessionId?: string;
     }
   | { type: 'clearBubble' }
-  | { type: 'config'; scale?: number };
+  | { type: 'config'; scale?: number }
+  | { type: 'gameMode'; active: boolean }
+  | { type: 'prepareGame' }
+  | { type: 'locale'; strings: CanvasStrings }
+  | {
+      type: 'visualTransition';
+      fromOpacity: number;
+      toOpacity: number;
+      fromScale: number;
+      toScale: number;
+      durationMs: number;
+    };
 
 /** Canvas → Host。 */
 export type CanvasToHostMessage =
@@ -56,6 +82,14 @@ export type CanvasToHostMessage =
   | { type: 'hitTest'; clickThrough: boolean }
   | { type: 'bubbleAction'; action: BubbleAction['id']; sessionId: string }
   | { type: 'openBubbleSession'; sessionId: string }
+  | {
+      type: 'enterGame';
+      originalX: number;
+      originalY: number;
+      centeredX: number;
+      centeredY: number;
+    }
+  | { type: 'exitGame'; x: number; y: number }
   | { type: 'exitPet' };
 
 const PET_STATE_SET = new Set<string>(PET_STATES);
@@ -107,6 +141,19 @@ export function isHostToCanvasMessage(value: unknown): value is HostToCanvasMess
       return true;
     case 'config':
       return isOptionalNumber(value.scale);
+    case 'gameMode':
+      return typeof value.active === 'boolean';
+    case 'prepareGame':
+      return true;
+    case 'locale':
+      return isRecord(value.strings)
+        && Object.values(value.strings).every((text) => typeof text === 'string');
+    case 'visualTransition':
+      return typeof value.fromOpacity === 'number'
+        && typeof value.toOpacity === 'number'
+        && typeof value.fromScale === 'number'
+        && typeof value.toScale === 'number'
+        && typeof value.durationMs === 'number';
     default:
       return false;
   }
@@ -123,6 +170,13 @@ export function isCanvasToHostMessage(value: unknown): value is CanvasToHostMess
       return value.action === 'open-session' && typeof value.sessionId === 'string';
     case 'openBubbleSession':
       return typeof value.sessionId === 'string';
+    case 'enterGame':
+      return typeof value.originalX === 'number'
+        && typeof value.originalY === 'number'
+        && typeof value.centeredX === 'number'
+        && typeof value.centeredY === 'number';
+    case 'exitGame':
+      return typeof value.x === 'number' && typeof value.y === 'number';
     case 'exitPet':
       return true;
     default:
