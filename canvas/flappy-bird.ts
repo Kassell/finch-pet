@@ -3,8 +3,13 @@ import type { CanvasStrings } from "../src/protocol.js";
 
 /** 状态栏独立于 9:16 游戏内容区，不计入游戏画面高度。 */
 const STATUS_BAR_HEIGHT = 56;
-const CLOSE_BUTTON_SIZE = 32;
-const CLOSE_BUTTON_RIGHT = 12;
+const STATUS_BUTTON_SIZE = 32;
+const STATUS_BUTTON_MARGIN = 12;
+const GAME_SOUND_BUTTON_X = 14;
+const GAME_SOUND_BUTTON_Y = STATUS_BAR_HEIGHT + 14;
+/** 原版仅包含 5 个事件音效，没有循环 BGM。 */
+type OriginalSound = "die" | "hit" | "point" | "swoosh" | "wing";
+type OriginalSoundUrls = Partial<Record<OriginalSound, string>>;
 
 interface PipePair {
   x: number;
@@ -29,6 +34,13 @@ export class FlappyBirdGame {
   private closePressX = 0;
   private closePressY = 0;
   private closePressMoved = false;
+  private soundHovered = false;
+  private soundPressed = false;
+  private muted = false;
+  private audioContext: AudioContext | null = null;
+  private soundBuffers = new Map<OriginalSound, AudioBuffer>();
+  private soundUrls: OriginalSoundUrls = {};
+  private activeSounds = new Set<AudioBufferSourceNode>();
   private playPressed = false;
   private playPressPhase: "ready" | "playing" | "over" = "ready";
   private playPressStartedAt = 0;
@@ -39,10 +51,74 @@ export class FlappyBirdGame {
   constructor(
     private readonly onExit: () => void,
     private strings: CanvasStrings,
-  ) {}
+    soundUrls: OriginalSoundUrls = {},
+  ) {
+    this.soundUrls = soundUrls;
+  }
 
   setStrings(strings: CanvasStrings): void {
     this.strings = strings;
+  }
+
+  setSoundUrls(soundUrls: OriginalSoundUrls): void {
+    this.deactivate();
+    this.soundUrls = soundUrls;
+    this.soundBuffers.clear();
+  }
+
+  /** 离开游戏时停止所有原版事件音效，避免桌宠模式下残留声音。 */
+  deactivate(): void {
+    for (const source of this.activeSounds) {
+      try { source.stop(); } catch { /* 已结束的音源无需重复停止。 */ }
+    }
+    this.activeSounds.clear();
+  }
+
+  private toggleSound(): void {
+    this.muted = !this.muted;
+    if (this.muted) this.deactivate();
+    else void this.playSound("swoosh");
+  }
+
+  private ensureAudioContext(): AudioContext {
+    if (!this.audioContext || this.audioContext.state === "closed") this.audioContext = new AudioContext();
+    if (this.audioContext.state === "suspended") void this.audioContext.resume();
+    return this.audioContext;
+  }
+
+  private async decodeSound(name: OriginalSound): Promise<AudioBuffer | undefined> {
+    const existing = this.soundBuffers.get(name);
+    if (existing) return existing;
+    const url = this.soundUrls[name];
+    if (!url) return undefined;
+    const comma = url.indexOf(",");
+    if (comma < 0) return undefined;
+    const binary = atob(url.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    const buffer = await this.ensureAudioContext().decodeAudioData(bytes.buffer);
+    this.soundBuffers.set(name, buffer);
+    return buffer;
+  }
+
+  private async playSound(name: OriginalSound): Promise<void> {
+    if (this.muted) return;
+    try {
+      const context = this.ensureAudioContext();
+      const buffer = await this.decodeSound(name);
+      if (!buffer || this.muted) return;
+      const source = context.createBufferSource();
+      const gain = context.createGain();
+      source.buffer = buffer;
+      gain.gain.value = 0.65;
+      source.connect(gain);
+      gain.connect(context.destination);
+      this.activeSounds.add(source);
+      source.addEventListener("ended", () => this.activeSounds.delete(source), { once: true });
+      source.start();
+    } catch {
+      // 解码失败时保持游戏可用；后续事件仍可尝试其他音效。
+    }
   }
 
   private format(template: string, values: Record<string, string | number>): string {
@@ -71,6 +147,7 @@ export class FlappyBirdGame {
     if (this.phase === "over") return;
     if (this.phase === "ready") this.phase = "playing";
     this.velocity = -410;
+    void this.playSound("wing");
   }
 
   keyDown(key: string): boolean {
@@ -93,22 +170,37 @@ export class FlappyBirdGame {
   }
 
   isCloseButtonPoint(x: number, y: number): boolean {
-    const buttonX = this.width - CLOSE_BUTTON_RIGHT - CLOSE_BUTTON_SIZE;
-    const buttonY = (STATUS_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2;
+    return this.isStatusButtonPoint(x, y, this.width - STATUS_BUTTON_MARGIN - STATUS_BUTTON_SIZE);
+  }
+
+  isSoundButtonPoint(x: number, y: number): boolean {
+    return x >= GAME_SOUND_BUTTON_X
+      && x <= GAME_SOUND_BUTTON_X + STATUS_BUTTON_SIZE
+      && y >= GAME_SOUND_BUTTON_Y
+      && y <= GAME_SOUND_BUTTON_Y + STATUS_BUTTON_SIZE;
+  }
+
+  private isStatusButtonPoint(x: number, y: number, buttonX: number): boolean {
+    const buttonY = (STATUS_BAR_HEIGHT - STATUS_BUTTON_SIZE) / 2;
     return x >= buttonX
-      && x <= buttonX + CLOSE_BUTTON_SIZE
+      && x <= buttonX + STATUS_BUTTON_SIZE
       && y >= buttonY
-      && y <= buttonY + CLOSE_BUTTON_SIZE;
+      && y <= buttonY + STATUS_BUTTON_SIZE;
   }
 
   cursorAt(x: number, y: number): "grab" | "pointer" | "default" {
-    if (this.isCloseButtonPoint(x, y)) return "pointer";
+    if (this.isCloseButtonPoint(x, y) || this.isSoundButtonPoint(x, y)) return "pointer";
     if (this.isDragHandle(x, y)) return "grab";
     return "default";
   }
 
   pointerDown(x: number, y: number): void {
     if (this.isDragHandle(x, y)) return;
+    if (this.isSoundButtonPoint(x, y)) {
+      this.soundPressed = true;
+      this.soundHovered = true;
+      return;
+    }
     if (this.isCloseButtonPoint(x, y)) {
       this.closePressed = true;
       this.closeHovered = true;
@@ -130,6 +222,7 @@ export class FlappyBirdGame {
 
   pointerMove(x: number, y: number): void {
     this.closeHovered = this.isCloseButtonPoint(x, y);
+    this.soundHovered = this.isSoundButtonPoint(x, y);
     if (this.closePressed && Math.hypot(x - this.closePressX, y - this.closePressY) > 6)
       this.closePressMoved = true;
     if (this.playPressed && Math.hypot(x - this.playPressX, y - this.playPressY) > 6)
@@ -137,6 +230,13 @@ export class FlappyBirdGame {
   }
 
   pointerUp(x: number, y: number): void {
+    if (this.soundPressed) {
+      const shouldToggle = this.isSoundButtonPoint(x, y);
+      this.soundPressed = false;
+      this.soundHovered = shouldToggle;
+      if (shouldToggle) this.toggleSound();
+      return;
+    }
     if (this.closePressed) {
       const isShortClick = performance.now() - this.closePressStartedAt <= 500;
       const shouldClose = isShortClick && !this.closePressMoved && this.isCloseButtonPoint(x, y);
@@ -163,6 +263,8 @@ export class FlappyBirdGame {
     this.closePressed = false;
     this.closeHovered = false;
     this.closePressMoved = false;
+    this.soundPressed = false;
+    this.soundHovered = false;
     this.playPressed = false;
     this.playPressMoved = false;
   }
@@ -202,6 +304,7 @@ export class FlappyBirdGame {
         pipe.scored = true;
         this.score += 1;
         this.best = Math.max(this.best, this.score);
+        void this.playSound("point");
       }
     }
     this.pipes = this.pipes.filter((pipe) => pipe.x + pipeWidth > -8);
@@ -214,6 +317,8 @@ export class FlappyBirdGame {
     if (hitPipe || bird.bottom >= floorY) {
       this.phase = "over";
       this.best = Math.max(this.best, this.score);
+      void this.playSound("hit");
+      setTimeout(() => { void this.playSound("die"); }, 90);
     }
   }
 
@@ -256,6 +361,7 @@ export class FlappyBirdGame {
     if (this.best > 0) this.paintBestScore(ctx);
 
     this.paintStatusBar(ctx);
+    this.paintSoundButton(ctx);
     if (this.phase === "over")
       this.paintCard(
         ctx,
@@ -431,8 +537,8 @@ export class FlappyBirdGame {
   }
 
   private paintStatusBar(ctx: CanvasRenderingContext2D): void {
-    const buttonX = this.width - CLOSE_BUTTON_RIGHT - CLOSE_BUTTON_SIZE;
-    const buttonY = (STATUS_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2;
+    const closeX = this.width - STATUS_BUTTON_MARGIN - STATUS_BUTTON_SIZE;
+    const buttonY = (STATUS_BAR_HEIGHT - STATUS_BUTTON_SIZE) / 2;
 
     ctx.fillStyle = "rgba(255,255,255,0.84)";
     ctx.fillRect(0, 0, this.width, STATUS_BAR_HEIGHT);
@@ -445,29 +551,69 @@ export class FlappyBirdGame {
     ctx.font = '700 15px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
     ctx.fillText(this.strings.gameHeader, this.width / 2, STATUS_BAR_HEIGHT / 2);
 
-    const pressedInside = this.closePressed && this.closeHovered;
-    const buttonScale = pressedInside ? 0.9 : 1;
-    const centerX = buttonX + CLOSE_BUTTON_SIZE / 2;
-    const centerY = buttonY + CLOSE_BUTTON_SIZE / 2;
+    this.paintStatusButton(ctx, closeX, buttonY, this.closeHovered, this.closePressed, () => {
+      ctx.beginPath();
+      ctx.moveTo(closeX + 11, buttonY + 11);
+      ctx.lineTo(closeX + 21, buttonY + 21);
+      ctx.moveTo(closeX + 21, buttonY + 11);
+      ctx.lineTo(closeX + 11, buttonY + 21);
+      ctx.stroke();
+    });
+  }
+
+  private paintSoundButton(ctx: CanvasRenderingContext2D): void {
+    const x = GAME_SOUND_BUTTON_X;
+    const y = GAME_SOUND_BUTTON_Y;
+    this.paintStatusButton(ctx, x, y, this.soundHovered, this.soundPressed, () => {
+      ctx.beginPath();
+      ctx.moveTo(x + 9, y + 13);
+      ctx.lineTo(x + 13, y + 13);
+      ctx.lineTo(x + 18, y + 9);
+      ctx.lineTo(x + 18, y + 23);
+      ctx.lineTo(x + 13, y + 19);
+      ctx.lineTo(x + 9, y + 19);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.beginPath();
+      if (this.muted) {
+        ctx.moveTo(x + 21, y + 12);
+        ctx.lineTo(x + 27, y + 20);
+        ctx.moveTo(x + 27, y + 12);
+        ctx.lineTo(x + 21, y + 20);
+      } else {
+        ctx.arc(x + 19, y + 16, 6, -0.8, 0.8);
+      }
+      ctx.stroke();
+    });
+  }
+
+  private paintStatusButton(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    hovered: boolean,
+    pressed: boolean,
+    paintIcon: () => void,
+  ): void {
+    const pressedInside = pressed && hovered;
+    const scale = pressedInside ? 0.9 : 1;
+    const centerX = x + STATUS_BUTTON_SIZE / 2;
+    const centerY = y + STATUS_BUTTON_SIZE / 2;
     ctx.save();
     ctx.translate(centerX, centerY);
-    ctx.scale(buttonScale, buttonScale);
+    ctx.scale(scale, scale);
     ctx.translate(-centerX, -centerY);
     ctx.fillStyle = pressedInside
       ? "rgba(32,63,61,0.2)"
-      : this.closeHovered ? "rgba(32,63,61,0.13)" : "rgba(32,63,61,0.07)";
+      : hovered ? "rgba(32,63,61,0.13)" : "rgba(32,63,61,0.07)";
     ctx.beginPath();
-    ctx.roundRect(buttonX, buttonY, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE / 2);
+    ctx.roundRect(x, y, STATUS_BUTTON_SIZE, STATUS_BUTTON_SIZE, STATUS_BUTTON_SIZE / 2);
     ctx.fill();
     ctx.strokeStyle = pressedInside ? "#122c2a" : "#203f3d";
     ctx.lineWidth = 1.8;
     ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(buttonX + 11, buttonY + 11);
-    ctx.lineTo(buttonX + 21, buttonY + 21);
-    ctx.moveTo(buttonX + 21, buttonY + 11);
-    ctx.lineTo(buttonX + 11, buttonY + 21);
-    ctx.stroke();
+    ctx.lineJoin = "round";
+    paintIcon();
     ctx.restore();
   }
 

@@ -18,6 +18,7 @@
   var isOptionalString = (value) => value === void 0 || typeof value === "string";
   var isOptionalNumber = (value) => value === void 0 || typeof value === "number";
   var isOptionalBoolean = (value) => value === void 0 || typeof value === "boolean";
+  var isOptionalStringRecord = (value) => value === void 0 || isRecord(value) && Object.values(value).every((item) => typeof item === "string");
   var isPlayMode = (value) => value === "loop" || value === "once" || value === "freeze";
   function isPetState(value) {
     return typeof value === "string" && PET_STATE_SET.has(value);
@@ -37,7 +38,7 @@
       case "config":
         return isOptionalNumber(value.scale);
       case "gameMode":
-        return typeof value.active === "boolean";
+        return typeof value.active === "boolean" && isOptionalStringRecord(value.soundUrls);
       case "prepareGame":
         return true;
       case "locale":
@@ -483,12 +484,15 @@
 
   // canvas/flappy-bird.ts
   var STATUS_BAR_HEIGHT = 56;
-  var CLOSE_BUTTON_SIZE = 32;
-  var CLOSE_BUTTON_RIGHT = 12;
+  var STATUS_BUTTON_SIZE = 32;
+  var STATUS_BUTTON_MARGIN = 12;
+  var GAME_SOUND_BUTTON_X = 14;
+  var GAME_SOUND_BUTTON_Y = STATUS_BAR_HEIGHT + 14;
   var FlappyBirdGame = class {
-    constructor(onExit, strings) {
+    constructor(onExit, strings, soundUrls = {}) {
       this.onExit = onExit;
       this.strings = strings;
+      this.soundUrls = soundUrls;
     }
     onExit;
     strings;
@@ -508,6 +512,13 @@
     closePressX = 0;
     closePressY = 0;
     closePressMoved = false;
+    soundHovered = false;
+    soundPressed = false;
+    muted = false;
+    audioContext = null;
+    soundBuffers = /* @__PURE__ */ new Map();
+    soundUrls = {};
+    activeSounds = /* @__PURE__ */ new Set();
     playPressed = false;
     playPressPhase = "ready";
     playPressStartedAt = 0;
@@ -516,6 +527,63 @@
     playPressMoved = false;
     setStrings(strings) {
       this.strings = strings;
+    }
+    setSoundUrls(soundUrls) {
+      this.deactivate();
+      this.soundUrls = soundUrls;
+      this.soundBuffers.clear();
+    }
+    /** 离开游戏时停止所有原版事件音效，避免桌宠模式下残留声音。 */
+    deactivate() {
+      for (const source of this.activeSounds) {
+        try {
+          source.stop();
+        } catch {
+        }
+      }
+      this.activeSounds.clear();
+    }
+    toggleSound() {
+      this.muted = !this.muted;
+      if (this.muted) this.deactivate();
+      else void this.playSound("swoosh");
+    }
+    ensureAudioContext() {
+      if (!this.audioContext || this.audioContext.state === "closed") this.audioContext = new AudioContext();
+      if (this.audioContext.state === "suspended") void this.audioContext.resume();
+      return this.audioContext;
+    }
+    async decodeSound(name) {
+      const existing = this.soundBuffers.get(name);
+      if (existing) return existing;
+      const url = this.soundUrls[name];
+      if (!url) return void 0;
+      const comma = url.indexOf(",");
+      if (comma < 0) return void 0;
+      const binary = atob(url.slice(comma + 1));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      const buffer = await this.ensureAudioContext().decodeAudioData(bytes.buffer);
+      this.soundBuffers.set(name, buffer);
+      return buffer;
+    }
+    async playSound(name) {
+      if (this.muted) return;
+      try {
+        const context = this.ensureAudioContext();
+        const buffer = await this.decodeSound(name);
+        if (!buffer || this.muted) return;
+        const source = context.createBufferSource();
+        const gain = context.createGain();
+        source.buffer = buffer;
+        gain.gain.value = 0.65;
+        source.connect(gain);
+        gain.connect(context.destination);
+        this.activeSounds.add(source);
+        source.addEventListener("ended", () => this.activeSounds.delete(source), { once: true });
+        source.start();
+      } catch {
+      }
     }
     format(template, values) {
       return template.replace(/\{(\w+)\}/g, (match, key) => Object.prototype.hasOwnProperty.call(values, key) ? String(values[key]) : match);
@@ -538,6 +606,7 @@
       if (this.phase === "over") return;
       if (this.phase === "ready") this.phase = "playing";
       this.velocity = -410;
+      void this.playSound("wing");
     }
     keyDown(key) {
       if (key === "Escape") {
@@ -555,17 +624,27 @@
       return y >= 0 && y <= STATUS_BAR_HEIGHT && !this.isCloseButtonPoint(x, y);
     }
     isCloseButtonPoint(x, y) {
-      const buttonX = this.width - CLOSE_BUTTON_RIGHT - CLOSE_BUTTON_SIZE;
-      const buttonY = (STATUS_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2;
-      return x >= buttonX && x <= buttonX + CLOSE_BUTTON_SIZE && y >= buttonY && y <= buttonY + CLOSE_BUTTON_SIZE;
+      return this.isStatusButtonPoint(x, y, this.width - STATUS_BUTTON_MARGIN - STATUS_BUTTON_SIZE);
+    }
+    isSoundButtonPoint(x, y) {
+      return x >= GAME_SOUND_BUTTON_X && x <= GAME_SOUND_BUTTON_X + STATUS_BUTTON_SIZE && y >= GAME_SOUND_BUTTON_Y && y <= GAME_SOUND_BUTTON_Y + STATUS_BUTTON_SIZE;
+    }
+    isStatusButtonPoint(x, y, buttonX) {
+      const buttonY = (STATUS_BAR_HEIGHT - STATUS_BUTTON_SIZE) / 2;
+      return x >= buttonX && x <= buttonX + STATUS_BUTTON_SIZE && y >= buttonY && y <= buttonY + STATUS_BUTTON_SIZE;
     }
     cursorAt(x, y) {
-      if (this.isCloseButtonPoint(x, y)) return "pointer";
+      if (this.isCloseButtonPoint(x, y) || this.isSoundButtonPoint(x, y)) return "pointer";
       if (this.isDragHandle(x, y)) return "grab";
       return "default";
     }
     pointerDown(x, y) {
       if (this.isDragHandle(x, y)) return;
+      if (this.isSoundButtonPoint(x, y)) {
+        this.soundPressed = true;
+        this.soundHovered = true;
+        return;
+      }
       if (this.isCloseButtonPoint(x, y)) {
         this.closePressed = true;
         this.closeHovered = true;
@@ -586,12 +665,20 @@
     }
     pointerMove(x, y) {
       this.closeHovered = this.isCloseButtonPoint(x, y);
+      this.soundHovered = this.isSoundButtonPoint(x, y);
       if (this.closePressed && Math.hypot(x - this.closePressX, y - this.closePressY) > 6)
         this.closePressMoved = true;
       if (this.playPressed && Math.hypot(x - this.playPressX, y - this.playPressY) > 6)
         this.playPressMoved = true;
     }
     pointerUp(x, y) {
+      if (this.soundPressed) {
+        const shouldToggle = this.isSoundButtonPoint(x, y);
+        this.soundPressed = false;
+        this.soundHovered = shouldToggle;
+        if (shouldToggle) this.toggleSound();
+        return;
+      }
       if (this.closePressed) {
         const isShortClick = performance.now() - this.closePressStartedAt <= 500;
         const shouldClose = isShortClick && !this.closePressMoved && this.isCloseButtonPoint(x, y);
@@ -614,6 +701,8 @@
       this.closePressed = false;
       this.closeHovered = false;
       this.closePressMoved = false;
+      this.soundPressed = false;
+      this.soundHovered = false;
       this.playPressed = false;
       this.playPressMoved = false;
     }
@@ -649,6 +738,7 @@
           pipe.scored = true;
           this.score += 1;
           this.best = Math.max(this.best, this.score);
+          void this.playSound("point");
         }
       }
       this.pipes = this.pipes.filter((pipe) => pipe.x + pipeWidth > -8);
@@ -660,6 +750,10 @@
       if (hitPipe || bird.bottom >= floorY) {
         this.phase = "over";
         this.best = Math.max(this.best, this.score);
+        void this.playSound("hit");
+        setTimeout(() => {
+          void this.playSound("die");
+        }, 90);
       }
     }
     paint(ctx) {
@@ -694,6 +788,7 @@
       else this.paintReadyScreen(ctx, floorY);
       if (this.best > 0) this.paintBestScore(ctx);
       this.paintStatusBar(ctx);
+      this.paintSoundButton(ctx);
       if (this.phase === "over")
         this.paintCard(
           ctx,
@@ -852,8 +947,8 @@ ${this.strings.gameRestartHint}`
       ctx.restore();
     }
     paintStatusBar(ctx) {
-      const buttonX = this.width - CLOSE_BUTTON_RIGHT - CLOSE_BUTTON_SIZE;
-      const buttonY = (STATUS_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2;
+      const closeX = this.width - STATUS_BUTTON_MARGIN - STATUS_BUTTON_SIZE;
+      const buttonY = (STATUS_BAR_HEIGHT - STATUS_BUTTON_SIZE) / 2;
       ctx.fillStyle = "rgba(255,255,255,0.84)";
       ctx.fillRect(0, 0, this.width, STATUS_BAR_HEIGHT);
       ctx.fillStyle = "rgba(37,66,65,0.1)";
@@ -863,27 +958,58 @@ ${this.strings.gameRestartHint}`
       ctx.fillStyle = "#203f3d";
       ctx.font = '700 15px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
       ctx.fillText(this.strings.gameHeader, this.width / 2, STATUS_BAR_HEIGHT / 2);
-      const pressedInside = this.closePressed && this.closeHovered;
-      const buttonScale = pressedInside ? 0.9 : 1;
-      const centerX = buttonX + CLOSE_BUTTON_SIZE / 2;
-      const centerY = buttonY + CLOSE_BUTTON_SIZE / 2;
+      this.paintStatusButton(ctx, closeX, buttonY, this.closeHovered, this.closePressed, () => {
+        ctx.beginPath();
+        ctx.moveTo(closeX + 11, buttonY + 11);
+        ctx.lineTo(closeX + 21, buttonY + 21);
+        ctx.moveTo(closeX + 21, buttonY + 11);
+        ctx.lineTo(closeX + 11, buttonY + 21);
+        ctx.stroke();
+      });
+    }
+    paintSoundButton(ctx) {
+      const x = GAME_SOUND_BUTTON_X;
+      const y = GAME_SOUND_BUTTON_Y;
+      this.paintStatusButton(ctx, x, y, this.soundHovered, this.soundPressed, () => {
+        ctx.beginPath();
+        ctx.moveTo(x + 9, y + 13);
+        ctx.lineTo(x + 13, y + 13);
+        ctx.lineTo(x + 18, y + 9);
+        ctx.lineTo(x + 18, y + 23);
+        ctx.lineTo(x + 13, y + 19);
+        ctx.lineTo(x + 9, y + 19);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.beginPath();
+        if (this.muted) {
+          ctx.moveTo(x + 21, y + 12);
+          ctx.lineTo(x + 27, y + 20);
+          ctx.moveTo(x + 27, y + 12);
+          ctx.lineTo(x + 21, y + 20);
+        } else {
+          ctx.arc(x + 19, y + 16, 6, -0.8, 0.8);
+        }
+        ctx.stroke();
+      });
+    }
+    paintStatusButton(ctx, x, y, hovered, pressed, paintIcon) {
+      const pressedInside = pressed && hovered;
+      const scale = pressedInside ? 0.9 : 1;
+      const centerX = x + STATUS_BUTTON_SIZE / 2;
+      const centerY = y + STATUS_BUTTON_SIZE / 2;
       ctx.save();
       ctx.translate(centerX, centerY);
-      ctx.scale(buttonScale, buttonScale);
+      ctx.scale(scale, scale);
       ctx.translate(-centerX, -centerY);
-      ctx.fillStyle = pressedInside ? "rgba(32,63,61,0.2)" : this.closeHovered ? "rgba(32,63,61,0.13)" : "rgba(32,63,61,0.07)";
+      ctx.fillStyle = pressedInside ? "rgba(32,63,61,0.2)" : hovered ? "rgba(32,63,61,0.13)" : "rgba(32,63,61,0.07)";
       ctx.beginPath();
-      ctx.roundRect(buttonX, buttonY, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE / 2);
+      ctx.roundRect(x, y, STATUS_BUTTON_SIZE, STATUS_BUTTON_SIZE, STATUS_BUTTON_SIZE / 2);
       ctx.fill();
       ctx.strokeStyle = pressedInside ? "#122c2a" : "#203f3d";
       ctx.lineWidth = 1.8;
       ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(buttonX + 11, buttonY + 11);
-      ctx.lineTo(buttonX + 21, buttonY + 21);
-      ctx.moveTo(buttonX + 21, buttonY + 11);
-      ctx.lineTo(buttonX + 11, buttonY + 21);
-      ctx.stroke();
+      ctx.lineJoin = "round";
+      paintIcon();
       ctx.restore();
     }
     paintCard(ctx, title, subtitle) {
@@ -1049,6 +1175,8 @@ ${this.strings.gameRestartHint}`
     gameOver: "Game Over",
     gameResult: "Score {score}  ·  Best {best}",
     gameRestartHint: "Click to play again",
+    gameSoundOn: "Mute sound",
+    gameSoundOff: "Play sound",
     loadingPet: "Loading pet…",
     spriteLoadFailed: "Failed to load spritesheet"
   };
@@ -1829,7 +1957,7 @@ ${this.strings.gameRestartHint}`
       );
       target.addEventListener("pointerdown", (e) => {
         const pointer = e;
-        if (this.gameActive && (this.game.isDragHandle(pointer.clientX, pointer.clientY) || this.game.isCloseButtonPoint(pointer.clientX, pointer.clientY))) {
+        if (this.gameActive && (this.game.isDragHandle(pointer.clientX, pointer.clientY) || this.game.isCloseButtonPoint(pointer.clientX, pointer.clientY) || this.game.isSoundButtonPoint(pointer.clientX, pointer.clientY))) {
           try {
             this.canvas.setPointerCapture(pointer.pointerId);
           } catch {
@@ -2049,6 +2177,7 @@ ${this.strings.gameRestartHint}`
         this.transitionStartedAt = performance.now();
         this.transitionDurationMs = Math.max(0, msg.durationMs);
       } else if (msg.type === "gameMode") {
+        if (msg.soundUrls) this.game.setSoundUrls(msg.soundUrls);
         this.gameActive = msg.active;
         this.gameDragging = false;
         this.game.cancelPointer();
@@ -2060,6 +2189,8 @@ ${this.strings.gameRestartHint}`
           this.clearBubble();
           this.game.resize(this.w, this.h);
           this.game.reset();
+        } else {
+          this.game.deactivate();
         }
       }
     }

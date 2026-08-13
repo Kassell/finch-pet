@@ -1,6 +1,6 @@
 {
   "name": "finch-pet",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "type": "module",
   "description": "Desktop pet for Finch.",
   "author": {
@@ -102,6 +102,7 @@
   "files": [
     "dist/",
     "pets/",
+    "public/",
     "pet-canvas.js",
     "icon.png",
     "icons/",

@@ -10,7 +10,7 @@
  */
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type * as finch from 'finch';
 import { isCanvasToHostMessage, PET_STATES, parsePetState, type CanvasStrings, type HostToCanvasMessage } from './protocol.js';
@@ -64,6 +64,8 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     gameOver: ctx.i18n.t('canvas.game.over'),
     gameResult: ctx.i18n.t('canvas.game.result'),
     gameRestartHint: ctx.i18n.t('canvas.game.restartHint'),
+    gameSoundOn: ctx.i18n.t('canvas.game.soundOn'),
+    gameSoundOff: ctx.i18n.t('canvas.game.soundOff'),
     loadingPet: ctx.i18n.t('canvas.pet.loading'),
     spriteLoadFailed: ctx.i18n.t('canvas.pet.spriteLoadFailed'),
   });
@@ -116,6 +118,17 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
   };
 
   const customPetsRoot = join(ctx.storagePath, 'pets');
+  const originalSoundNames = ['die', 'hit', 'point', 'swoosh', 'wing'] as const;
+  let originalSoundUrls: Partial<Record<typeof originalSoundNames[number], string>> | undefined;
+  const loadOriginalSoundUrls = async () => {
+    if (originalSoundUrls) return originalSoundUrls;
+    originalSoundUrls = {};
+    await Promise.all(originalSoundNames.map(async (name) => {
+      const bytes = await readFile(join(ctx.minitool.extensionPath, 'public', 'assets', 'flappy-bird', 'audio', `${name}.ogg`));
+      originalSoundUrls![name] = `data:audio/ogg;base64,${bytes.toString('base64')}`;
+    }));
+    return originalSoundUrls;
+  };
   const builtinPetsRoot = join(ctx.minitool.extensionPath, 'pets');
   const registry = new PetRegistryStore(ctx.storagePath);
 
@@ -214,7 +227,11 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
         runtime.dismissSessionBubble(event.sessionId);
       }
       if ((event?.type === 'openBubbleSession' || (event?.type === 'bubbleAction' && event.action === 'open-session')) && event.sessionId) {
-        void openSession(event.sessionId).catch((err: unknown) => ctx.logger.warn('open pet session failed', err instanceof Error ? err.message : String(err)));
+        void openSession(event.sessionId)
+          .then(() => setTimeout(() => {
+            void ctx.status.get().then(runtime.applyRuntimeStatus).catch((err: unknown) => ctx.logger.warn('sync pet runtime status after opening session failed', err instanceof Error ? err.message : String(err)));
+          }, 300))
+          .catch((err: unknown) => ctx.logger.warn('open pet session failed', err instanceof Error ? err.message : String(err)));
       }
       if (event?.type === 'enterGame') {
         void enterGame(
@@ -302,7 +319,13 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     petWindow.setAlwaysOnTop(true, 'normal');
     petWindow.setSize(gameCanvasWidth, gameCanvasHeight);
     petWindow.setPosition(centeredPosition.x, centeredPosition.y);
-    await petWindow.postMessage({ type: 'gameMode', active: true });
+    let soundUrls: Awaited<ReturnType<typeof loadOriginalSoundUrls>> = {};
+    try {
+      soundUrls = await loadOriginalSoundUrls();
+    } catch (err) {
+      ctx.logger.warn('load bundled Flappy Bird audio failed', err instanceof Error ? err.message : String(err));
+    }
+    await petWindow.postMessage({ type: 'gameMode', active: true, soundUrls });
     const completed = await runVisualTransition({
       fromOpacity: 0,
       toOpacity: 1,

@@ -37,6 +37,8 @@ export interface CanvasStrings {
   gameOver: string;
   gameResult: string;
   gameRestartHint: string;
+  gameSoundOn: string;
+  gameSoundOff: string;
   loadingPet: string;
   spriteLoadFailed: string;
 }
@@ -64,7 +66,11 @@ export type HostToCanvasMessage =
     }
   | { type: 'clearBubble' }
   | { type: 'config'; scale?: number }
-  | { type: 'gameMode'; active: boolean }
+  | {
+      type: 'gameMode';
+      active: boolean;
+      soundUrls?: Partial<Record<'die' | 'hit' | 'point' | 'swoosh' | 'wing', string>>;
+    }
   | { type: 'prepareGame' }
   | { type: 'locale'; strings: CanvasStrings }
   | {
@@ -100,6 +106,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isOptionalString = (value: unknown) => value === undefined || typeof value === 'string';
 const isOptionalNumber = (value: unknown) => value === undefined || typeof value === 'number';
 const isOptionalBoolean = (value: unknown) => value === undefined || typeof value === 'boolean';
+const isOptionalStringRecord = (value: unknown) => value === undefined
+  || (isRecord(value) && Object.values(value).every((item) => typeof item === 'string'));
 const isPlayMode = (value: unknown): value is PlayMode => value === 'loop' || value === 'once' || value === 'freeze';
 
 export function isPetState(value: unknown): value is PetState {
@@ -142,7 +150,7 @@ export function isHostToCanvasMessage(value: unknown): value is HostToCanvasMess
     case 'config':
       return isOptionalNumber(value.scale);
     case 'gameMode':
-      return typeof value.active === 'boolean';
+      return typeof value.active === 'boolean' && isOptionalStringRecord(value.soundUrls);
     case 'prepareGame':
       return true;
     case 'locale':

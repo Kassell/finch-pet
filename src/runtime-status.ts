@@ -167,7 +167,13 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
       return { message: ctx.i18n.t('runtime.workingFallback'), key: 'working-fallback' };
     }
     if (snapshot.unreadCount > 0 || snapshot.status === 'unread') {
-      return { message: ctx.i18n.t('runtime.unread'), key: `unread:${snapshot.unreadCount || 1}` };
+      const sessionId = snapshot.latestUnreadSessionId;
+      return {
+        message: ctx.i18n.t('runtime.unread'),
+        key: `unread:${snapshot.unreadCount || 1}:${sessionId ?? 'unknown'}`,
+        sessionId,
+        action: sessionAction(sessionId),
+      };
     }
     return undefined;
   };

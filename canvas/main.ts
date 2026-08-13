@@ -69,6 +69,8 @@ const DEFAULT_CANVAS_STRINGS: CanvasStrings = {
   gameOver: "Game Over",
   gameResult: "Score {score}  ·  Best {best}",
   gameRestartHint: "Click to play again",
+  gameSoundOn: "Mute sound",
+  gameSoundOff: "Play sound",
   loadingPet: "Loading pet…",
   spriteLoadFailed: "Failed to load spritesheet",
 };
@@ -1018,6 +1020,7 @@ class PetCanvasApp {
       if (this.gameActive && (
         this.game.isDragHandle(pointer.clientX, pointer.clientY)
         || this.game.isCloseButtonPoint(pointer.clientX, pointer.clientY)
+        || this.game.isSoundButtonPoint(pointer.clientX, pointer.clientY)
       )) {
         try { this.canvas.setPointerCapture(pointer.pointerId); } catch { /* shell 不支持时由 window pointerup 兜底。 */ }
       }
@@ -1248,6 +1251,7 @@ class PetCanvasApp {
       this.transitionStartedAt = performance.now();
       this.transitionDurationMs = Math.max(0, msg.durationMs);
     } else if (msg.type === "gameMode") {
+      if (msg.soundUrls) this.game.setSoundUrls(msg.soundUrls);
       this.gameActive = msg.active;
       this.gameDragging = false;
       this.game.cancelPointer();
@@ -1259,6 +1263,8 @@ class PetCanvasApp {
         this.clearBubble();
         this.game.resize(this.w, this.h);
         this.game.reset();
+      } else {
+        this.game.deactivate();
       }
     }
   }

@@ -29,7 +29,9 @@
       "best": "BEST {best}",
       "over": "Game Over",
       "result": "Score {score}  ·  Best {best}",
-      "restartHint": "Click to play again"
+      "restartHint": "Click to play again",
+      "soundOn": "Mute sound",
+      "soundOff": "Play sound"
     },
     "pet": {
       "loading": "Loading pet…",

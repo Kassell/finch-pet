@@ -29,7 +29,9 @@
       "best": "最佳 {best}",
       "over": "游戏结束",
       "result": "得分 {score}  ·  最佳 {best}",
-      "restartHint": "点击再来一局"
+      "restartHint": "点击再来一局",
+      "soundOn": "关闭音效",
+      "soundOff": "开启音效"
     },
     "pet": {
       "loading": "加载宠物中…",
