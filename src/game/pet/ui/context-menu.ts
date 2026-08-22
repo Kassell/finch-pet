@@ -5,10 +5,14 @@ export class PetContextMenu {
   private element: HTMLDivElement | undefined;
   private opened = false;
   private playItem: HTMLButtonElement | undefined;
+  private waveItem: HTMLButtonElement | undefined;
+  private jumpItem: HTMLButtonElement | undefined;
   private closeItem: HTMLButtonElement | undefined;
 
   constructor(
     private readonly onPlayGame: () => void,
+    private readonly onWave: () => void,
+    private readonly onJump: () => void,
     private readonly onExitPet: () => void,
     private strings: CanvasStrings,
   ) {}
@@ -20,6 +24,8 @@ export class PetContextMenu {
   setStrings(strings: CanvasStrings): void {
     this.strings = strings;
     if (this.playItem) this.playItem.textContent = strings.menuPlayGame;
+    if (this.waveItem) this.waveItem.textContent = strings.menuWave;
+    if (this.jumpItem) this.jumpItem.textContent = strings.menuJump;
     if (this.closeItem) this.closeItem.textContent = strings.menuClosePet;
   }
 
@@ -56,22 +62,22 @@ export class PetContextMenu {
     const menu = document.createElement("div");
     menu.style.position = "fixed";
     menu.style.zIndex = "2147483647";
-    menu.style.minWidth = "132px";
-    menu.style.padding = "6px";
-    menu.style.borderRadius = "12px";
+    menu.style.minWidth = "116px";
+    menu.style.padding = "4px";
+    menu.style.borderRadius = "10px";
     menu.style.background = "rgba(255,255,255,0.96)";
     menu.style.boxShadow = "0 12px 32px rgba(0,0,0,0.22)";
     menu.style.border = "1px solid rgba(0,0,0,0.08)";
     menu.style.backdropFilter = "blur(12px)";
-    menu.style.font = '13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+    menu.style.font = '12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
     menu.style.color = "#231f20";
     menu.style.display = "none";
     menu.style.pointerEvents = "auto";
     this.playItem = this.makeItem(this.strings.menuPlayGame, () => this.onPlayGame());
+    this.waveItem = this.makeItem(this.strings.menuWave, () => this.onWave());
+    this.jumpItem = this.makeItem(this.strings.menuJump, () => this.onJump());
     this.closeItem = this.makeItem(this.strings.menuClosePet, () => this.onExitPet());
-    menu.appendChild(this.playItem);
-    menu.appendChild(this.makeSeparator());
-    menu.appendChild(this.closeItem);
+    menu.append(this.playItem, this.waveItem, this.jumpItem, this.makeSeparator(), this.closeItem);
     document.body.appendChild(menu);
     this.element = menu;
     return menu;
@@ -80,7 +86,7 @@ export class PetContextMenu {
   private makeSeparator(): HTMLDivElement {
     const separator = document.createElement("div");
     separator.style.height = "1px";
-    separator.style.margin = "5px 6px";
+    separator.style.margin = "3px 5px";
     separator.style.background = "rgba(0,0,0,0.08)";
     return separator;
   }
@@ -92,9 +98,10 @@ export class PetContextMenu {
     item.style.display = "block";
     item.style.width = "100%";
     item.style.border = "0";
-    item.style.borderRadius = "8px";
+    item.style.borderRadius = "7px";
     item.style.background = "transparent";
-    item.style.padding = "8px 10px";
+    item.style.padding = "6px 8px";
+    item.style.lineHeight = "16px";
     item.style.textAlign = "left";
     item.style.font = "inherit";
     item.style.color = "inherit";

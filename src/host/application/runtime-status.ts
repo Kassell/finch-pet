@@ -31,9 +31,19 @@ export interface RuntimeStatusHost {
   post(message: HostToCanvasMessage): Promise<void>;
 }
 
+export interface RuntimeStatusPreferences {
+  showThinking(): boolean;
+  notifyResult(): boolean;
+  notifyWaiting(): boolean;
+}
+
 export type PetRuntimeStatus = ReturnType<typeof createPetRuntimeStatus>;
 
-export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: RuntimeStatusHost) {
+export function createPetRuntimeStatus(
+  ctx: finch.MiniToolContext,
+  host: RuntimeStatusHost,
+  preferences: RuntimeStatusPreferences = { showThinking: () => true, notifyResult: () => true, notifyWaiting: () => true },
+) {
   const sessionRuntimes = new Map<string, SessionRuntime>();
   const dismissedSessionBubbles = new Set<string>();
   let lastRuntimeState: PetState | undefined;
@@ -68,7 +78,8 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
   };
 
   const sessionIsWaiting = (sessionId?: string) => !!sessionId && sessionRuntimes.get(sessionId)?.phase === 'waiting';
-  const hasWaitingSession = () => [...sessionRuntimes.values()].some((runtime) => runtime.phase === 'waiting');
+  const hasWaitingSession = () => preferences.notifyWaiting()
+    && [...sessionRuntimes.values()].some((runtime) => runtime.phase === 'waiting');
 
   const rememberPhase = (event: finch.AgentEvent, phase: SessionPhase, kind: PhraseKind, toolName?: string) => {
     const candidate = randomPhrase(kind);
@@ -115,7 +126,7 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
     .sort((a, b) => a[1].updatedAt - b[1].updatedAt)[0]?.[0];
 
   const mostRecentActiveRuntime = () => [...sessionRuntimes.entries()]
-    .filter(([, runtime]) => runtime.phase === 'thinking' || runtime.phase === 'answering' || runtime.phase === 'tool')
+    .filter(([, runtime]) => (preferences.showThinking() && runtime.phase === 'thinking') || runtime.phase === 'answering' || runtime.phase === 'tool')
     .sort((a, b) => b[1].updatedAt - a[1].updatedAt)[0];
 
   const bubbleMessage = (message: string, key = message) => {
@@ -127,18 +138,22 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
   };
 
   const stateForRuntimeStatus = (snapshot: finch.FinchStatusSnapshot): PetState => {
-    if (snapshot.waitingCount > 0 || snapshot.status === 'waiting') return 'waving';
+    const isWaiting = snapshot.waitingCount > 0 || snapshot.status === 'waiting';
+    if (isWaiting) return preferences.notifyWaiting() ? 'waving' : 'idle';
     if (snapshot.runningCount > 0 || snapshot.status === 'running') {
+      if (!preferences.showThinking()) return 'idle';
       const foreground = sessionRuntimes.get(ctx.session.id);
       return foreground?.phase === 'thinking' ? 'waiting' : 'running';
     }
-    if (snapshot.unreadCount > 0 || snapshot.status === 'unread') return 'waving';
+    if (preferences.notifyResult() && (snapshot.unreadCount > 0 || snapshot.status === 'unread')) return 'waving';
     return 'idle';
   };
 
   const persistentRuntimeBubble = (snapshot: finch.FinchStatusSnapshot): RuntimeBubble | undefined => {
     const foreground = sessionRuntimes.get(ctx.session.id);
-    if (snapshot.waitingCount > 0 || snapshot.status === 'waiting') {
+    const isWaiting = snapshot.waitingCount > 0 || snapshot.status === 'waiting';
+    if (isWaiting) {
+      if (!preferences.notifyWaiting()) return undefined;
       const waitingSessionId = nextWaitingSessionId()
         ?? (!dismissedSessionBubbles.has(ctx.session.id) ? ctx.session.id : undefined);
       if (!waitingSessionId) return undefined;
@@ -150,6 +165,7 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
       };
     }
     if (snapshot.runningCount > 0 || snapshot.status === 'running') {
+      if (!preferences.showThinking()) return undefined;
       if (snapshot.runningCount > 1) {
         const active = mostRecentActiveRuntime();
         if (active?.[1].bubble) {
@@ -157,7 +173,7 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
         }
         return { message: ctx.i18n.t('runtime.runningMany'), key: `running-many:${snapshot.runningCount}` };
       }
-      if (foreground?.bubble && (foreground.phase === 'thinking' || foreground.phase === 'answering' || foreground.phase === 'tool')) {
+      if (foreground?.bubble && ((preferences.showThinking() && foreground.phase === 'thinking') || foreground.phase === 'answering' || foreground.phase === 'tool')) {
         return { message: foreground.bubble, key: `${foreground.phase}:${ctx.session.id}:${foreground.bubble}`, sessionId: ctx.session.id };
       }
       const background = mostRecentActiveRuntime();
@@ -166,7 +182,7 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
       }
       return { message: ctx.i18n.t('runtime.workingFallback'), key: 'working-fallback' };
     }
-    if (snapshot.unreadCount > 0 || snapshot.status === 'unread') {
+    if (preferences.notifyResult() && (snapshot.unreadCount > 0 || snapshot.status === 'unread')) {
       const sessionId = snapshot.latestUnreadSessionId;
       return {
         message: ctx.i18n.t('runtime.unread'),
@@ -188,7 +204,7 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
 
   const applyRuntimeStatus = async (snapshot: finch.FinchStatusSnapshot) => {
     const now = Date.now();
-    const isWaiting = snapshot.waitingCount > 0 || snapshot.status === 'waiting';
+    const isWaiting = preferences.notifyWaiting() && (snapshot.waitingCount > 0 || snapshot.status === 'waiting');
     if (isWaiting) {
       transientRuntimeUntil = 0;
       clearTransientRuntimeTimer();
@@ -246,6 +262,21 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
     clearTransientRuntimeTimer();
   };
 
+  const clearCompletedRuntimeFeedback = async () => {
+    clearTransientRuntimeState();
+    if (hasWaitingSession()) {
+      const snapshot = await ctx.status.get();
+      await applyRuntimeStatus({ ...snapshot, status: 'waiting', waitingCount: Math.max(1, snapshot.waitingCount) });
+      return;
+    }
+    lastRuntimeState = 'idle';
+    lastPersistentBubbleKey = '';
+    lastBubbleKey = '';
+    if (host.hasWindow()) {
+      await host.post({ type: 'setState', state: 'idle', transientMs: 0, clearBubble: true });
+    }
+  };
+
   const setRuntimePhaseState = async (state: PetState, message?: string, bubbleKey?: string, action?: BubbleAction, sessionId?: string) => {
     if (state !== 'waving' && hasWaitingSession()) {
       const snapshot = await ctx.status.get();
@@ -280,30 +311,35 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
         break;
       case 'user': {
         rememberPhase(event, 'thinking', 'thinking');
+        if (!preferences.showThinking()) break;
         await playTransientRuntimeState('jumping', 900, randomPhrase('start'), `start:${event.sessionId ?? 'current'}:${event.id}`, undefined, event.sessionId, 'freeze');
         break;
       }
       case 'thinking': {
         if (sessionIsWaiting(event.sessionId)) break;
         const message = rememberPhase(event, 'thinking', 'thinking');
+        if (!preferences.showThinking()) break;
         await setRuntimePhaseState(event.sessionId === ctx.session.id ? 'waiting' : 'running', message, `thinking:${event.sessionId ?? 'current'}:${message}`, undefined, event.sessionId);
         break;
       }
       case 'assistant_text': {
         if (sessionIsWaiting(event.sessionId)) break;
         const message = rememberPhase(event, 'answering', 'answering');
+        if (!preferences.showThinking()) break;
         await setRuntimePhaseState('running', message, `answering:${event.sessionId ?? 'current'}:${message}`, undefined, event.sessionId);
         break;
       }
       case 'tool_use': {
         if (sessionIsWaiting(event.sessionId)) break;
         const message = rememberPhase(event, 'tool', 'working', event.toolName);
+        if (!preferences.showThinking()) break;
         await setRuntimePhaseState('running', message, `working:${event.sessionId ?? 'current'}:${message}`, undefined, event.sessionId);
         break;
       }
       case 'tool_result': {
         if (sessionIsWaiting(event.sessionId)) break;
         const message = rememberPhase(event, 'thinking', 'thinking', event.toolName);
+        if (!preferences.showThinking()) break;
         await setRuntimePhaseState(event.sessionId === ctx.session.id ? 'waiting' : 'running', message, `thinking:${event.sessionId ?? 'current'}:${message}`, undefined, event.sessionId);
         break;
       }
@@ -320,14 +356,26 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
       }
       case 'result':
         rememberSession(event, 'done');
+        if (!preferences.notifyResult()) {
+          await clearCompletedRuntimeFeedback();
+          break;
+        }
         await playTransientRuntimeState('review', 5000, randomPhrase('done'), `done:${event.sessionId ?? event.id}`, sessionAction(event.sessionId), event.sessionId);
         break;
       case 'error':
         rememberSession(event, 'error');
+        if (!preferences.notifyResult()) {
+          await clearCompletedRuntimeFeedback();
+          break;
+        }
         await playTransientRuntimeState(event.isRetryable ? 'waiting' : 'failed', 5000, randomPhrase('error'), `error:${event.sessionId ?? event.id}`, undefined, event.sessionId, event.isRetryable ? undefined : 'freeze');
         break;
       case 'interrupted':
         rememberSession(event, 'idle');
+        if (!preferences.notifyResult()) {
+          await clearCompletedRuntimeFeedback();
+          break;
+        }
         await playTransientRuntimeState('idle', 5000, randomPhrase('interrupted'), `interrupted:${event.sessionId ?? event.id}`, undefined, event.sessionId);
         break;
       case 'session_status': {
@@ -347,6 +395,7 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
 
   const handleNotification = async (event: finch.FinchNotificationEvent) => {
     const key = `notification:${event.id}`;
+    if (event.kind !== 'waiting' && !preferences.notifyResult()) return;
     if (event.kind === 'error') {
       await playTransientRuntimeState('failed', 5000, randomPhrase('error'), key, undefined, event.sessionId, 'freeze');
     } else if (event.kind === 'waiting') {
@@ -374,6 +423,17 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
     }
     clearTransientRuntimeState();
     lastBubbleKey = '';
+    lastPersistentBubbleKey = '';
+    lastRuntimeState = undefined;
+    await applyRuntimeStatus(await ctx.status.get());
+  };
+
+  const refreshRuntimePreferences = async () => {
+    clearTransientRuntimeState();
+    lastBubbleKey = '';
+    // 设置关闭后必须主动移除已经显示的 persistent/transient 气泡。
+    // 不能只重置 key，否则 applyRuntimeStatus 会误判为没有旧气泡需要清理。
+    if (host.hasWindow()) await host.post({ type: 'clearBubble' });
     lastPersistentBubbleKey = '';
     lastRuntimeState = undefined;
     await applyRuntimeStatus(await ctx.status.get());
@@ -408,6 +468,7 @@ export function createPetRuntimeStatus(ctx: finch.MiniToolContext, host: Runtime
     handleAgentEvent,
     handleNotification,
     refreshRuntimeLocale,
+    refreshRuntimePreferences,
     dismissSessionBubble,
     resetForClose,
     resetForWindowDisposed,

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pet Gallery</title>
+  <link rel="stylesheet" href="./pet-catalog.css">
+</head>
+<body>
+  <main class="catalog-shell">
+    <header class="catalog-header">
+      <h1 id="title">Pet Gallery</h1>
+      <p id="subtitle"></p>
+    </header>
+
+    <section class="catalog-content" aria-live="polite">
+      <div id="grid" class="pet-grid"></div>
+      <div id="empty" class="empty-state" hidden></div>
+      <div id="overlay" class="content-overlay" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="status-message"></p>
+      </div>
+    </section>
+
+  </main>
+  <script type="module" src="./pet-catalog.js"></script>
+</body>
+</html>

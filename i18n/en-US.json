@@ -1,44 +1,38 @@
 {
   "name": "Finch Pet",
   "description": "Desktop pet for Finch.",
-  "systemPrompt": "This extension provides a desktop pet. Use pet_control for common show, hide, animation, and speech actions. Pet library management tools (pet_list, pet_select, pet_add, pet_remove) are provided by the local finch-pet MCP server and should be discovered only when needed.",
+  "systemPrompt": "This extension provides a desktop pet. Use pet_control for common show, hide, animation, and speech actions. If the user wants to add a pet without naming an exact one, discover and call pet_catalog from the local finch-pet MCP server first. Present the current Petdex candidates with preview images and short descriptions, ask the user to choose, and only call pet_add after confirmation. Use the candidate page URL directly and never ask the user to copy a Petdex link. Use pet_list, pet_select, and pet_remove for local library management.",
   "toolMeta": {
     "name": "Finch Pet"
   },
+  "appPanel": {
+    "title": "Pet Gallery"
+  },
   "contributes": {
     "settingsMenu": {
-      "tooltip": "Pet and game controls"
-    }
-  },
-  "settings": {
-    "firstPet": {
-      "label": "Choose your first pet",
-      "description": "Preview it on Petdex, then save to install and select it.",
-      "options": {
-        "": "Choose later",
-        "boba": "Boba · cozy otter",
-        "doraemon": "Doraemon · robot cat",
-        "tiko": "Tiko · utility robot",
-        "lulu-capybara-2": "Lulu · capybara",
-        "noir-webling": "Noir Webling · detective spider"
-      }
-    },
-    "petdexPreview": {
-      "label": "Preview animated pets on Petdex",
-      "description": "Browse the full pet gallery."
+      "tooltip": "Desktop pet settings"
     }
   },
   "settingsMenu": {
+    "runtimeFeedback": "Runtime feedback",
+    "showProgress": "Show execution progress",
+    "notifyResult": "Notify execution results",
+    "notifyWaiting": "Notify when waiting",
     "playGame": "Play Flappy Bird",
     "exitGame": "Exit game",
     "playing": "Playing",
     "installFirst": "Add a pet first",
     "showPet": "Show pet",
-    "hidePet": "Hide pet"
+    "hidePet": "Hide pet",
+    "addFirstPet": "Choose your first pet",
+    "addFirstPetDescription": "Open the pet gallery",
+    "addPet": "Add another pet"
   },
   "canvas": {
     "menu": {
-      "playGame": "Play a game",
+      "playGame": "Play",
+      "wave": "Wave",
+      "jump": "Jump",
       "closePet": "Close pet"
     },
     "game": {
@@ -55,6 +49,14 @@
     "pet": {
       "loading": "Loading pet…",
       "spriteLoadFailed": "Failed to load pet image"
+    },
+    "catalog": {
+      "title": "Choose a desktop pet",
+      "subtitle": "Petdex official top 30",
+      "searchPlaceholder": "Search pets",
+      "noResults": "No matching pets",
+      "installing": "Installing and waking your pet…",
+      "close": "Close"
     }
   },
   "composerActions": {
@@ -68,7 +70,9 @@
       "interact": "Interact",
       "wave": "Wave",
       "jump": "Jump",
-      "addPet": "Add pet…",
+      "addPet": "Add pet",
+      "removePet": "Delete pet",
+      "removedPet": "Deleted {name}",
       "builtin": "Built-in",
       "custom": "Custom",
       "noPets": "No available pets",
@@ -76,11 +80,39 @@
       "noPetTitle": "No pet is ready to display",
       "noPetDescription": "Install a desktop pet from Petdex first.",
       "install": "Install",
-      "installPrompt": "Help me install a desktop pet from Petdex"
+      "chooseFromPetdex": "Choose from the pet gallery",
+      "chooseFromPetdexDescription": "Browse candidates and install directly",
+      "chooseWithFinch": "Choose together with Finch",
+      "chooseWithFinchDescription": "Start a new chat and decide after previewing",
+      "installPrompt": "Help me choose a desktop pet. Call pet_catalog from the finch-pet MCP server, show current candidates with preview images and descriptions, and wait for my choice before calling pet_add. Do not ask me to copy a link.",
+      "chooseSessionTitle": "Choose a desktop pet"
     }
   },
   "pet": {
-    "noAvailable": "No pet is ready to display yet. Finch's official pets are still being designed. For now, visit Petdex (https://petdex.dev), choose a pet you like, and send me its page URL—I can install it for you."
+    "noAvailable": "No pet is ready to display. Choose one from Petdex in the Finch Pet menu, or ask me to show candidates and install your choice in chat."
+  },
+  "webview": {
+    "catalog": {
+      "loading": "Loading Petdex pets…",
+      "installing": "Installing…",
+      "install": "Install",
+      "installed": "Installed",
+      "remove": "Remove",
+      "removeFailed": "Failed to remove pet"
+    }
+  },
+  "petCatalog": {
+    "title": "Choose a pet from Petdex",
+    "description": "Current popular Petdex pets are ready. Your choice will be downloaded, installed, and shown automatically.",
+    "choose": "Choose pet",
+    "openGallery": "Open the full Petdex gallery",
+    "galleryDescription": "Open the gallery if you want to browse more candidates.",
+    "cancel": "Cancel",
+    "install": "Install and show",
+    "installed": "Installed and showing {name}",
+    "loadFailed": "Could not load Petdex pets",
+    "installFailed": "Pet installation failed",
+    "invalidSelection": "That pet is no longer in the current candidates. Choose again."
   },
   "runtime": {
     "waiting": "I need your nod here",
@@ -122,18 +154,6 @@
       "interrupted1": "Let’s leave it here for now",
       "interrupted2": "Okay, let’s take a break",
       "interrupted3": "I’ll keep our place here"
-    }
-  },
-  "promptGuides": {
-    "show-pet": {
-      "title": "Show pet",
-      "description": "Show the current pet",
-      "prompt": "Show the pet"
-    },
-    "list-pets": {
-      "title": "List pets",
-      "description": "List available pets",
-      "prompt": "List available pets"
     }
   }
 }

@@ -40,9 +40,14 @@
       case "gameMode":
         return typeof value.active === "boolean" && isOptionalString(value.appId) && isOptionalStringRecord(value.soundUrls);
       case "prepareGame":
+      case "focusWindow":
         return true;
+      case "requestWindowPosition":
+        return typeof value.requestId === "string" && value.requestId.length > 0 && value.requestId.length <= 100;
       case "locale":
         return isRecord(value.strings) && Object.values(value.strings).every((text) => typeof text === "string");
+      case "renderCatalogThumbnail":
+        return typeof value.requestId === "string" && value.requestId.length > 0 && value.requestId.length <= 100 && typeof value.dataUrl === "string" && value.dataUrl.startsWith("data:image/webp;base64,") && value.dataUrl.length <= 3 * 1024 * 1024;
       case "visualTransition":
         return typeof value.fromOpacity === "number" && typeof value.toOpacity === "number" && typeof value.fromScale === "number" && typeof value.toScale === "number" && typeof value.durationMs === "number";
       default:
@@ -142,6 +147,9 @@
     keyDown(key) {
       return this.active?.keyDown?.(key) ?? false;
     }
+    wheel(deltaY) {
+      return this.active?.wheel?.(deltaY) ?? false;
+    }
     blur() {
       this.active?.blur?.();
     }
@@ -214,6 +222,12 @@
       listen(window, "keydown", (event) => {
         const value = event;
         if (!this.game.keyDown(value.key)) return;
+        value.preventDefault();
+        value.stopPropagation();
+      });
+      listen(target, "wheel", (event) => {
+        const value = event;
+        if (!this.game.wheel(value.deltaY)) return;
         value.preventDefault();
         value.stopPropagation();
       });
@@ -966,9 +980,11 @@ ${this.strings.gameRestartHint}`
   function spriteFrameSize(image) {
     const sourceWidth = image.naturalWidth || image.width || COLUMNS * BASE_FRAME_WIDTH;
     const sourceHeight = image.naturalHeight || image.height || ROWS * BASE_FRAME_HEIGHT;
+    const width = sourceWidth / COLUMNS;
+    const proportionalHeight = width * (BASE_FRAME_HEIGHT / BASE_FRAME_WIDTH);
     return {
-      width: sourceWidth / COLUMNS,
-      height: sourceHeight / ROWS
+      width,
+      height: sourceHeight + 0.5 >= proportionalHeight * ROWS ? proportionalHeight : sourceHeight / ROWS
     };
   }
   function frameHasVisiblePixels(image, row, column) {
@@ -1270,17 +1286,23 @@ ${this.strings.gameRestartHint}`
 
   // src/game/pet/ui/context-menu.ts
   var PetContextMenu = class {
-    constructor(onPlayGame, onExitPet, strings) {
+    constructor(onPlayGame, onWave, onJump, onExitPet, strings) {
       this.onPlayGame = onPlayGame;
+      this.onWave = onWave;
+      this.onJump = onJump;
       this.onExitPet = onExitPet;
       this.strings = strings;
     }
     onPlayGame;
+    onWave;
+    onJump;
     onExitPet;
     strings;
     element;
     opened = false;
     playItem;
+    waveItem;
+    jumpItem;
     closeItem;
     get isOpen() {
       return this.opened;
@@ -1288,6 +1310,8 @@ ${this.strings.gameRestartHint}`
     setStrings(strings) {
       this.strings = strings;
       if (this.playItem) this.playItem.textContent = strings.menuPlayGame;
+      if (this.waveItem) this.waveItem.textContent = strings.menuWave;
+      if (this.jumpItem) this.jumpItem.textContent = strings.menuJump;
       if (this.closeItem) this.closeItem.textContent = strings.menuClosePet;
     }
     show(x, y) {
@@ -1316,22 +1340,22 @@ ${this.strings.gameRestartHint}`
       const menu = document.createElement("div");
       menu.style.position = "fixed";
       menu.style.zIndex = "2147483647";
-      menu.style.minWidth = "132px";
-      menu.style.padding = "6px";
-      menu.style.borderRadius = "12px";
+      menu.style.minWidth = "116px";
+      menu.style.padding = "4px";
+      menu.style.borderRadius = "10px";
       menu.style.background = "rgba(255,255,255,0.96)";
       menu.style.boxShadow = "0 12px 32px rgba(0,0,0,0.22)";
       menu.style.border = "1px solid rgba(0,0,0,0.08)";
       menu.style.backdropFilter = "blur(12px)";
-      menu.style.font = '13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+      menu.style.font = '12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
       menu.style.color = "#231f20";
       menu.style.display = "none";
       menu.style.pointerEvents = "auto";
       this.playItem = this.makeItem(this.strings.menuPlayGame, () => this.onPlayGame());
+      this.waveItem = this.makeItem(this.strings.menuWave, () => this.onWave());
+      this.jumpItem = this.makeItem(this.strings.menuJump, () => this.onJump());
       this.closeItem = this.makeItem(this.strings.menuClosePet, () => this.onExitPet());
-      menu.appendChild(this.playItem);
-      menu.appendChild(this.makeSeparator());
-      menu.appendChild(this.closeItem);
+      menu.append(this.playItem, this.waveItem, this.jumpItem, this.makeSeparator(), this.closeItem);
       document.body.appendChild(menu);
       this.element = menu;
       return menu;
@@ -1339,7 +1363,7 @@ ${this.strings.gameRestartHint}`
     makeSeparator() {
       const separator = document.createElement("div");
       separator.style.height = "1px";
-      separator.style.margin = "5px 6px";
+      separator.style.margin = "3px 5px";
       separator.style.background = "rgba(0,0,0,0.08)";
       return separator;
     }
@@ -1350,9 +1374,10 @@ ${this.strings.gameRestartHint}`
       item.style.display = "block";
       item.style.width = "100%";
       item.style.border = "0";
-      item.style.borderRadius = "8px";
+      item.style.borderRadius = "7px";
       item.style.background = "transparent";
-      item.style.padding = "8px 10px";
+      item.style.padding = "6px 8px";
+      item.style.lineHeight = "16px";
       item.style.textAlign = "left";
       item.style.font = "inherit";
       item.style.color = "inherit";
@@ -1686,7 +1711,9 @@ ${this.strings.gameRestartHint}`
   var GAME_WINDOW_WIDTH = 360;
   var GAME_WINDOW_HEIGHT = 696;
   var DEFAULT_CANVAS_STRINGS = {
-    menuPlayGame: "Play a game",
+    menuPlayGame: "Play",
+    menuWave: "Wave",
+    menuJump: "Jump",
     menuClosePet: "Close pet",
     gameHeader: "Flappy Finch",
     gameTitle: "FlappyFinch",
@@ -1711,6 +1738,8 @@ ${this.strings.gameRestartHint}`
       this.animation = new PetAnimationSystem(FPS, (row) => this.frameCountForRow(row), () => this.cancelMouseAction());
       this.petMenu = new PetContextMenu(
         () => this.requestGameOpen(),
+        () => this.playSingleClick(),
+        () => this.playJump(),
         () => this.postToHost({ type: "exitPet" }),
         this.strings
       );
@@ -2350,15 +2379,18 @@ ${this.strings.gameRestartHint}`
       this.setState("waving", { playMode: "once", source: "mouse" });
       this.postToHost({ type: "poke", state: this.state });
     }
+    playJump() {
+      if (!this.canStartMouseAction()) return;
+      this.setState("jumping", { playMode: "once", source: "mouse" });
+      this.postToHost({ type: "poke", state: this.state });
+    }
     playDoubleClick() {
       if (this.bubbleSessionId) {
         this.postToHost({ type: "openBubbleSession", sessionId: this.bubbleSessionId });
         this.clearBubble();
         return;
       }
-      if (!this.canStartMouseAction()) return;
-      this.setState("jumping", { playMode: "once", source: "mouse" });
-      this.postToHost({ type: "poke", state: this.state });
+      this.playJump();
     }
     contextMenu(x, y) {
       if (!this.isPointOnPet(x, y)) return false;
@@ -2510,12 +2542,57 @@ ${this.strings.gameRestartHint}`
 
   // src/game/main.ts
   var DEFAULT_APP_ID = "flappy-bird";
+  var THUMBNAIL_RENDERER_APP_ID = "thumbnail-renderer";
   var game = new Game({ updatesPerSecond: 60 });
   var apps = new AppRegistry();
   var platform = new FinchCanvasPlatform();
   var input;
+  var canvasElement;
   var post = (message) => finch.postMessage(message);
+  var focusInteractiveWindow = () => {
+    requestAnimationFrame(() => {
+      window.focus();
+      canvasElement?.focus({ preventScroll: true });
+    });
+  };
+  var renderCatalogThumbnail = (requestId, dataUrl) => {
+    const image = new Image();
+    image.onload = () => {
+      try {
+        const frameHeight = Math.max(1, image.naturalHeight);
+        const frameWidth = Math.max(1, Math.min(image.naturalWidth, Math.round(frameHeight * (192 / 208))));
+        const canvas = document.createElement("canvas");
+        canvas.width = frameWidth;
+        canvas.height = frameHeight;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("2D canvas is unavailable");
+        context.imageSmoothingEnabled = false;
+        context.clearRect(0, 0, frameWidth, frameHeight);
+        context.drawImage(image, 0, 0, frameWidth, frameHeight, 0, 0, frameWidth, frameHeight);
+        const png = canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
+        post({ type: "catalogThumbnailRendered", requestId, data: png });
+      } catch (error) {
+        post({ type: "catalogThumbnailRendered", requestId, error: error instanceof Error ? error.message : String(error) });
+      }
+    };
+    image.onerror = () => post({ type: "catalogThumbnailRendered", requestId, error: "Failed to decode Petdex preview" });
+    image.src = dataUrl;
+  };
   game.register("pet", ({ viewport, initialData }) => new PetScene({ viewport, initialData, post, platform }));
+  apps.register({
+    id: THUMBNAIL_RENDERER_APP_ID,
+    create: ({ viewport }) => ({
+      id: THUMBNAIL_RENDERER_APP_ID,
+      enter: () => void 0,
+      exit: () => void 0,
+      resize: () => void 0,
+      update: () => void 0,
+      render: () => viewport.context.clearRect(0, 0, viewport.width, viewport.height),
+      pointer: () => void 0,
+      message: () => void 0,
+      dispose: () => void 0
+    })
+  });
   apps.register({
     id: DEFAULT_APP_ID,
     create: ({ viewport, initialData }) => {
@@ -2532,7 +2609,11 @@ ${this.strings.gameRestartHint}`
   finch.canvas.define({
     init: (args) => {
       const data = args.initialData || {};
-      game.init(args, data.initialGameMode === true ? DEFAULT_APP_ID : "pet");
+      const initialScene = data.initialAppId ? apps.require(data.initialAppId) : data.initialGameMode === true ? DEFAULT_APP_ID : "pet";
+      game.init(args, initialScene);
+      canvasElement = args.canvas;
+      canvasElement.tabIndex = -1;
+      canvasElement.style.outline = "none";
       input = new DomInputAdapter(game, args.canvas);
       input.attach();
     },
@@ -2540,6 +2621,18 @@ ${this.strings.gameRestartHint}`
     resize: (width, height) => game.resize(width, height),
     onMessage: (raw) => {
       if (!isHostToCanvasMessage(raw)) return;
+      if (raw.type === "renderCatalogThumbnail") {
+        renderCatalogThumbnail(raw.requestId, raw.dataUrl);
+        return;
+      }
+      if (raw.type === "focusWindow") {
+        focusInteractiveWindow();
+        return;
+      }
+      if (raw.type === "requestWindowPosition") {
+        post({ type: "windowPositionSnapshot", requestId: raw.requestId, x: window.screenX, y: window.screenY });
+        return;
+      }
       if (raw.type === "gameMode") {
         game.switchScene(raw.active ? apps.require(raw.appId || DEFAULT_APP_ID) : "pet");
       }
@@ -2548,6 +2641,7 @@ ${this.strings.gameRestartHint}`
     dispose: () => {
       input?.dispose();
       input = void 0;
+      canvasElement = void 0;
       game.dispose();
     }
   });

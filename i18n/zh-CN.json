@@ -1,44 +1,38 @@
 {
   "name": "Finch Pet",
   "description": "Finch 桌宠。",
-  "systemPrompt": "这个扩展提供 Finch 桌宠。常用的显示、隐藏、动画和气泡操作统一使用 pet_control；宠物库管理工具 pet_list、pet_select、pet_add、pet_remove 由本地 finch-pet MCP 按需发现。",
+  "systemPrompt": "这个扩展提供 Finch 桌宠。常用显示、隐藏、动画和气泡操作统一使用 pet_control。用户想添加宠物但没有指定具体宠物时，先发现并调用 finch-pet MCP 的 pet_catalog，把当前 Petdex 候选的预览图和简介展示给用户并请用户选择；只有用户确认后才调用 pet_add，直接使用候选的页面 URL，不要要求用户自行复制 Petdex 链接。宠物库的查看、选择和删除分别使用 pet_list、pet_select、pet_remove。",
   "toolMeta": {
     "name": "Finch Pet"
   },
+  "appPanel": {
+    "title": "宠物画廊"
+  },
   "contributes": {
     "settingsMenu": {
-      "tooltip": "桌宠与游戏"
-    }
-  },
-  "settings": {
-    "firstPet": {
-      "label": "选择第一只宠物",
-      "description": "先在 Petdex 预览，保存设置后将自动安装并选中。",
-      "options": {
-        "": "暂不选择",
-        "boba": "Boba · 治愈水獭",
-        "doraemon": "Doraemon · 机器猫",
-        "tiko": "Tiko · 工具机器人",
-        "lulu-capybara-2": "噜噜 · 水豚",
-        "noir-webling": "Noir Webling · 侦探蜘蛛"
-      }
-    },
-    "petdexPreview": {
-      "label": "在 Petdex 预览动态宠物",
-      "description": "前往完整宠物画廊挑选。"
+      "tooltip": "桌宠设置"
     }
   },
   "settingsMenu": {
+    "runtimeFeedback": "运行反馈",
+    "showProgress": "显示执行进度",
+    "notifyResult": "提示执行结果",
+    "notifyWaiting": "提示等待操作",
     "playGame": "玩 Flappy Bird",
     "exitGame": "退出游戏",
     "playing": "游戏中",
     "installFirst": "请先添加一只宠物",
     "showPet": "显示桌宠",
-    "hidePet": "隐藏桌宠"
+    "hidePet": "隐藏桌宠",
+    "addFirstPet": "选择第一只宠物",
+    "addFirstPetDescription": "打开宠物画廊",
+    "addPet": "添加另一只宠物"
   },
   "canvas": {
     "menu": {
-      "playGame": "玩个游戏",
+      "playGame": "玩游戏",
+      "wave": "打个招呼",
+      "jump": "跳一跳",
       "closePet": "关闭桌宠"
     },
     "game": {
@@ -55,6 +49,14 @@
     "pet": {
       "loading": "加载宠物中…",
       "spriteLoadFailed": "宠物图像加载失败"
+    },
+    "catalog": {
+      "title": "选择一只桌宠",
+      "subtitle": "Petdex 官方前 30 名",
+      "searchPlaceholder": "搜索宠物",
+      "noResults": "没有匹配的宠物",
+      "installing": "正在安装并唤醒你的桌宠…",
+      "close": "关闭"
     }
   },
   "composerActions": {
@@ -68,7 +70,9 @@
       "interact": "和它互动",
       "wave": "挥手",
       "jump": "跳一下",
-      "addPet": "添加宠物…",
+      "addPet": "添加宠物",
+      "removePet": "删除宠物",
+      "removedPet": "已删除 {name}",
       "builtin": "内置",
       "custom": "自定义",
       "noPets": "暂无可用宠物",
@@ -76,11 +80,39 @@
       "noPetTitle": "还没有可显示的宠物",
       "noPetDescription": "请先从 Petdex 安装一只桌宠。",
       "install": "去安装",
-      "installPrompt": "帮我从 Petdex 安装一只桌宠"
+      "chooseFromPetdex": "从宠物画廊选择",
+      "chooseFromPetdexDescription": "浏览候选并直接安装",
+      "chooseWithFinch": "和 Finch 一起挑选",
+      "chooseWithFinchDescription": "新建对话，预览后再决定",
+      "installPrompt": "帮我挑选一只桌宠。请调用 finch-pet MCP 的 pet_catalog，展示当前候选宠物的预览图和简介让我选择；等我确认后再调用 pet_add 安装，不要让我复制链接。",
+      "chooseSessionTitle": "挑选桌宠"
     }
   },
   "pet": {
-    "noAvailable": "当前还没有可显示的宠物。Finch 官方宠物仍在设计制作中，你可以先前往 Petdex（https://petdex.dev）挑选一只喜欢的宠物，再把它的页面链接发给我，我会帮你安装。"
+    "noAvailable": "当前还没有可显示的宠物。请先通过 Finch Pet 菜单从 Petdex 选择，或让我在聊天中展示候选后帮你安装。"
+  },
+  "webview": {
+    "catalog": {
+      "loading": "正在加载 Petdex 宠物…",
+      "installing": "安装中…",
+      "install": "安装",
+      "installed": "已安装",
+      "remove": "删除",
+      "removeFailed": "删除宠物失败"
+    }
+  },
+  "petCatalog": {
+    "title": "从 Petdex 选择宠物",
+    "description": "已加载 Petdex 当前热门候选。选中后会自动下载、安装并显示。",
+    "choose": "选择宠物",
+    "openGallery": "查看完整 Petdex 画廊",
+    "galleryDescription": "想浏览更多候选时可打开完整画廊。",
+    "cancel": "取消",
+    "install": "安装并显示",
+    "installed": "已安装并显示 {name}",
+    "loadFailed": "暂时无法加载 Petdex 宠物",
+    "installFailed": "宠物安装失败",
+    "invalidSelection": "这个宠物已不在当前候选中，请重新选择"
   },
   "runtime": {
     "waiting": "这里需要你点个头",
@@ -122,18 +154,6 @@
       "interrupted1": "那就先停在这里",
       "interrupted2": "好，我们先歇一会儿",
       "interrupted3": "我先把进度放在这里"
-    }
-  },
-  "promptGuides": {
-    "show-pet": {
-      "title": "显示宠物",
-      "description": "显示当前宠物",
-      "prompt": "显示宠物"
-    },
-    "list-pets": {
-      "title": "查看宠物",
-      "description": "列出可用宠物",
-      "prompt": "列出可用宠物"
     }
   }
 }

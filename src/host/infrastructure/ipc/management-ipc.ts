@@ -3,7 +3,7 @@ import { chmod, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-export type PetManagementMethod = 'pet_list' | 'pet_select' | 'pet_add' | 'pet_remove';
+export type PetManagementMethod = 'pet_catalog' | 'pet_list' | 'pet_select' | 'pet_add' | 'pet_remove';
 
 export type PetManagementContent =
   | { type: 'text'; text: string }

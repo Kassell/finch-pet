@@ -12,6 +12,7 @@ Before showing the pet for the first time, import one with `pet_add` or ask Finc
 - Display short speech bubbles.
 - React to Finch agent runtime states such as working, waiting, failed, and background-done.
 - Import Petdex-compatible pets from local or remote sources.
+- Browse and install popular Petdex pets from the built-in Finch Webview gallery.
 - Manage the selected pet from Finch tools.
 
 ## Supported pet sources
@@ -38,6 +39,7 @@ Pet-library management is provided by the local `finch-pet` MCP server and disco
 
 | MCP tool | Description |
 |---|---|
+| `pet_catalog` | Fetch current Petdex candidates with preview images so the user can choose before installation. |
 | `pet_list` | List available pets. |
 | `pet_select` | Select the active pet by name. |
 | `pet_add` | Import a Petdex-compatible pet. |
@@ -57,10 +59,17 @@ This extension requests:
 
 ```bash
 npm install
-npm run build
+npm run check
+npx @finchtoys/minitools doctor .
 ```
 
-The canvas bundle is generated from `canvas/` into `pet-canvas.js` during `npm run build`.
+`npm run build` builds the host, game core, Canvas bundle `pet-canvas.js`, and the Webview pet gallery under `dist/`.
+
+The mini tool manifest lives in the standalone root `finch.json`. Install or update locally with:
+
+```bash
+npx @finchtoys/minitools add ./
+```
 
 ## License
 

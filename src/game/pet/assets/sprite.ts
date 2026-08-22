@@ -2,8 +2,9 @@
  * Petdex spritesheet 解析(纯逻辑)。
  *
  * 约定大于配置:所有图片都按 Petdex 标准 spritesheet 处理:
- * 固定 8 列 × 9 行解析;192×208 只是最小/基准显示尺寸。
- * 可以使用更高清的等比例 spritesheet,实际源图每帧尺寸按图片宽高 / 8 / 9 自动计算,
+ * 固定 8 列；v1 至少 9 行，v2 可追加扩展动作行。192×208 是基准帧比例。
+ * 可以使用更高清的等比例 spritesheet，实际源帧宽度按图片宽度 / 8 计算，
+ * 帧高度再按 192:208 比例推导，不能直接除以 9，否则 v2 的 11 行图集会串帧。
  * 屏幕渲染尺寸与图片分辨率无关(见 main.ts 的渲染基准框)。
  *
  * 某些动作行可能少于 8 个有效帧,后面的格子是透明空帧,
@@ -52,9 +53,11 @@ export interface VisibleBounds {
 export function spriteFrameSize(image: Partial<HTMLImageElement>): FrameSize {
   const sourceWidth = image.naturalWidth || image.width || COLUMNS * BASE_FRAME_WIDTH;
   const sourceHeight = image.naturalHeight || image.height || ROWS * BASE_FRAME_HEIGHT;
+  const width = sourceWidth / COLUMNS;
+  const proportionalHeight = width * (BASE_FRAME_HEIGHT / BASE_FRAME_WIDTH);
   return {
-    width: sourceWidth / COLUMNS,
-    height: sourceHeight / ROWS,
+    width,
+    height: sourceHeight + 0.5 >= proportionalHeight * ROWS ? proportionalHeight : sourceHeight / ROWS,
   };
 }
 

@@ -29,6 +29,8 @@ export interface BubbleAction {
 /** Host 解析 ctx.i18n 后传给隔离 Canvas 的全部界面文案。 */
 export interface CanvasStrings {
   menuPlayGame: string;
+  menuWave: string;
+  menuJump: string;
   menuClosePet: string;
   gameHeader: string;
   gameTitle: string;
@@ -73,7 +75,10 @@ export type HostToCanvasMessage =
       soundUrls?: Partial<Record<'die' | 'hit' | 'point' | 'swoosh' | 'wing', string>>;
     }
   | { type: 'prepareGame' }
+  | { type: 'focusWindow' }
+  | { type: 'requestWindowPosition'; requestId: string }
   | { type: 'locale'; strings: CanvasStrings }
+  | { type: 'renderCatalogThumbnail'; requestId: string; dataUrl: string }
   | {
       type: 'visualTransition';
       fromOpacity: number;
@@ -98,7 +103,9 @@ export type CanvasToHostMessage =
       centeredY: number;
     }
   | { type: 'exitGame'; x: number; y: number }
-  | { type: 'exitPet' };
+  | { type: 'exitPet' }
+  | { type: 'catalogThumbnailRendered'; requestId: string; data?: string; error?: string }
+  | { type: 'windowPositionSnapshot'; requestId: string; x: number; y: number };
 
 const PET_STATE_SET = new Set<string>(PET_STATES);
 
@@ -156,10 +163,22 @@ export function isHostToCanvasMessage(value: unknown): value is HostToCanvasMess
         && isOptionalString(value.appId)
         && isOptionalStringRecord(value.soundUrls);
     case 'prepareGame':
+    case 'focusWindow':
       return true;
+    case 'requestWindowPosition':
+      return typeof value.requestId === 'string'
+        && value.requestId.length > 0
+        && value.requestId.length <= 100;
     case 'locale':
       return isRecord(value.strings)
         && Object.values(value.strings).every((text) => typeof text === 'string');
+    case 'renderCatalogThumbnail':
+      return typeof value.requestId === 'string'
+        && value.requestId.length > 0
+        && value.requestId.length <= 100
+        && typeof value.dataUrl === 'string'
+        && value.dataUrl.startsWith('data:image/webp;base64,')
+        && value.dataUrl.length <= 3 * 1024 * 1024;
     case 'visualTransition':
       return typeof value.fromOpacity === 'number'
         && typeof value.toOpacity === 'number'
@@ -192,6 +211,21 @@ export function isCanvasToHostMessage(value: unknown): value is CanvasToHostMess
       return typeof value.x === 'number' && typeof value.y === 'number';
     case 'exitPet':
       return true;
+    case 'catalogThumbnailRendered':
+      return typeof value.requestId === 'string'
+        && value.requestId.length > 0
+        && value.requestId.length <= 100
+        && isOptionalString(value.data)
+        && isOptionalString(value.error)
+        && (value.data === undefined || value.data.length <= 2 * 1024 * 1024);
+    case 'windowPositionSnapshot':
+      return typeof value.requestId === 'string'
+        && value.requestId.length > 0
+        && value.requestId.length <= 100
+        && typeof value.x === 'number'
+        && Number.isFinite(value.x)
+        && typeof value.y === 'number'
+        && Number.isFinite(value.y);
     default:
       return false;
   }

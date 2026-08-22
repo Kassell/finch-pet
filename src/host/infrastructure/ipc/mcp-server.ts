@@ -11,6 +11,18 @@ type JsonRpcRequest = {
 
 const tools = [
   {
+    name: 'pet_catalog',
+    title: 'Browse Petdex pets',
+    description: 'Fetch current Petdex candidates with names, descriptions, and preview images. When the user wants a pet but has not chosen one, call this first, present the candidates, and wait for the user to choose before calling pet_add.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', minimum: 3, maximum: 8, description: 'Number of candidates to return. Defaults to 6.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'pet_list',
     title: 'List desktop pets',
     description: 'List available Petdex desktop pets. Use for infrequent pet-library management and discovery.',
@@ -72,6 +84,10 @@ const callTool = async (name: unknown, args: Record<string, unknown>): Promise<P
   let params: Record<string, unknown>;
   try {
     switch (name) {
+      case 'pet_catalog':
+        method = 'pet_catalog';
+        params = { limit: typeof args.limit === 'number' ? args.limit : undefined };
+        break;
       case 'pet_list':
         method = 'pet_list';
         params = {};
@@ -109,7 +125,7 @@ const handleRequest = async (request: JsonRpcRequest) => {
       result(id, {
         protocolVersion,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'finch-pet', version: '1.0.3' },
+        serverInfo: { name: 'finch-pet', version: '1.0.9' },
       });
       return;
     }

@@ -9,11 +9,17 @@
  * - src/game/       纯 ctx2d 游戏运行时(构建产物为根目录 pet-canvas.js)
  */
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type * as finch from 'finch';
 import { isCanvasToHostMessage, PET_STATES, parsePetState, type CanvasStrings, type HostToCanvasMessage } from '../../../shared/protocol.js';
+import {
+  isCatalogWebviewToHostMessage,
+  type CatalogWebviewStrings,
+  type HostToCatalogWebviewMessage,
+} from '../../../shared/catalog-webview-protocol.js';
 import type { WindowPosition } from '../../domain/types.js';
 import { safePetName } from '../../domain/utils.js';
 import { exists } from '../../infrastructure/pet-package.js';
@@ -22,7 +28,9 @@ import { DuplicatePetIdError, NoAvailablePetError } from '../../domain/errors.js
 import { createPetLibrary } from '../../application/pet-library.js';
 import { createPetImporters, type ImportPetResult } from '../../application/importers.js';
 import { createPetRuntimeStatus } from '../../application/runtime-status.js';
-import { createPetManagementIpcServer, type PetManagementHandlers } from '../../infrastructure/ipc/management-ipc.js';
+import { beginCatalogRemoval, finishCatalogRemoval, rollbackCatalogRemoval } from '../../application/catalog-removal.js';
+import { createPetManagementIpcServer, type PetManagementHandlers, type PetManagementContent } from '../../infrastructure/ipc/management-ipc.js';
+import { fetchPetdexCatalog, fetchPetdexPreview, type PetdexCatalogItem } from '../../infrastructure/petdex-catalog.js';
 import { PetVisibilityController } from '../../application/visibility-controller.js';
 import { CanvasWindowCoordinator } from '../../application/window-coordinator.js';
 
@@ -41,7 +49,8 @@ interface McpClientCapability {
 }
 
 function readIconSvg(name: string): string {
-  return readFileSync(new URL(`../icons/${name}.svg`, import.meta.url), 'utf-8');
+  // 编译产物位于 dist/host/platform/finch，图标则随包发布在根目录 icons。
+  return readFileSync(new URL(`../../../../icons/${name}.svg`, import.meta.url), 'utf-8');
 }
 
 function isVersionAtLeast(version: string, minimum: readonly [number, number, number]): boolean {
@@ -58,6 +67,8 @@ function isVersionAtLeast(version: string, minimum: readonly [number, number, nu
 export function registerPetExtension(ctx: finch.MiniToolContext) {
   const canvasStrings = (): CanvasStrings => ({
     menuPlayGame: ctx.i18n.t('canvas.menu.playGame'),
+    menuWave: ctx.i18n.t('canvas.menu.wave'),
+    menuJump: ctx.i18n.t('canvas.menu.jump'),
     menuClosePet: ctx.i18n.t('canvas.menu.closePet'),
     gameHeader: ctx.i18n.t('canvas.game.header'),
     gameTitle: ctx.i18n.t('canvas.game.title'),
@@ -74,6 +85,10 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
   ctx.subscriptions.push(
     ctx.icons.register('finch-pet', {
       action: { svg: readIconSvg('action'), description: 'Desktop pet action' },
+      add: { svg: readIconSvg('add'), description: 'Add pet' },
+      eye: { svg: readIconSvg('eye'), description: 'Show pet' },
+      'eye-off': { svg: readIconSvg('eye-off'), description: 'Hide pet' },
+      trash: { svg: readIconSvg('trash'), description: 'Delete custom pet' },
     }),
   );
 
@@ -119,6 +134,28 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     });
   };
 
+  const scheduleSessionOpen = (
+    sessionId: string,
+    navigate?: (id: string) => Promise<void>,
+  ): void => {
+    setTimeout(() => {
+      if (navigate) {
+        void navigate(sessionId).catch((error: unknown) => {
+          ctx.logger.warn('open session with internal navigation failed', error instanceof Error ? error.message : String(error));
+        });
+        setTimeout(() => {
+          void openSession(sessionId).catch((error: unknown) => {
+            ctx.logger.warn('open session deep-link fallback failed', error instanceof Error ? error.message : String(error));
+          });
+        }, 200);
+        return;
+      }
+      void openSession(sessionId).catch((error: unknown) => {
+        ctx.logger.warn('open session deep link failed', error instanceof Error ? error.message : String(error));
+      });
+    }, 120);
+  };
+
   const customPetsRoot = join(ctx.storagePath, 'pets');
   const originalSoundNames = ['die', 'hit', 'point', 'swoosh', 'wing'] as const;
   let originalSoundUrls: Partial<Record<typeof originalSoundNames[number], string>> | undefined;
@@ -142,10 +179,27 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
   };
 
   const visibility = new PetVisibilityController(ctx.storage, notifyControlState);
+  const runtimeFeedback = { showThinking: true, notifyResult: true, notifyWaiting: true };
+  const runtimeFeedbackReady = Promise.all([
+    ctx.storage.get<boolean>('runtime.showThinking'),
+    ctx.storage.get<boolean>('runtime.notifyResult'),
+    ctx.storage.get<boolean>('runtime.notifyWaiting'),
+  ]).then(([showThinking, notifyResult, notifyWaiting]) => {
+    runtimeFeedback.showThinking = showThinking !== false;
+    // 旧版只有“显示工作进度”：若用户曾关闭它，新拆出的结果提醒也保持关闭。
+    runtimeFeedback.notifyResult = notifyResult ?? runtimeFeedback.showThinking;
+    runtimeFeedback.notifyWaiting = notifyWaiting !== false;
+  }).catch((error: unknown) => {
+    ctx.logger.warn('restore pet runtime feedback settings failed', error instanceof Error ? error.message : String(error));
+  });
 
   const runtime = createPetRuntimeStatus(ctx, {
     hasWindow: () => !!windows.current,
     post: async (message) => { if (windows.current) await windows.current.postMessage(message); },
+  }, {
+    showThinking: () => runtimeFeedback.showThinking,
+    notifyResult: () => runtimeFeedback.notifyResult,
+    notifyWaiting: () => runtimeFeedback.notifyWaiting,
   });
 
   const clearPositionSaveTimer = () => {
@@ -252,7 +306,6 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
         void hidePet().catch((err: unknown) => ctx.logger.warn('hide pet from context menu failed', err instanceof Error ? err.message : String(err)));
       }
     });
-    await ctx.storage.set('window.canvasWidth', canvasWidth);
     createdWindow.onDidMove((pos) => {
       if (gameActive || gameTransitioning) {
         gameWindowPosition = pos;
@@ -282,6 +335,15 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       runtime.resetForWindowDisposed();
       notifyControlState();
     });
+    // Canvas 脚本完成 shell 加载、define 注册和 init 后才允许状态同步或返回调用方，
+    // 避免首条气泡/动画消息在初始化期间丢失。
+    try {
+      await createdWindow.ready;
+    } catch (error) {
+      createdWindow.dispose();
+      throw error;
+    }
+    await ctx.storage.set('window.canvasWidth', canvasWidth);
     runtime.prepareForWindowOpen();
     void ctx.status.get().then(runtime.applyRuntimeStatus).catch((err: unknown) => ctx.logger.warn('sync pet runtime status failed', err instanceof Error ? err.message : String(err)));
     return createdWindow;
@@ -295,6 +357,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       return windows.current;
     }
     const created = await windows.ensure(createWindow);
+    created.show();
     notifyControlState();
     return created;
   };
@@ -350,6 +413,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       }
     }
     await windows.current.postMessage({ type: 'gameMode', active: true, appId, soundUrls });
+    await windows.current.postMessage({ type: 'focusWindow' });
     const completed = await runVisualTransition({
       fromOpacity: 0,
       toOpacity: 1,
@@ -425,6 +489,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
 
   const selectInstalledPet = async (pet: { name: string; displayName: string }): Promise<ImportPetResult> => {
     await ctx.storage.set('selectedPet', pet.name);
+    notifyControlState();
     await reopenIfVisible();
     return { name: pet.name, displayName: pet.displayName, duplicate: true };
   };
@@ -437,9 +502,295 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     selectInstalledPet,
     activateInstalledPet: async (name) => {
       await ctx.storage.set('selectedPet', name);
+      notifyControlState();
       await reopenIfVisible();
     },
   });
+
+  const conciseError = (error: unknown): string => {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.replace(/https?:\/\/\S+/g, '[URL]').replace(/\s+/g, ' ').trim().slice(0, 180);
+  };
+
+  const waitForWindowDispose = async (window: finch.CanvasWindow | undefined): Promise<void> => {
+    if (!window || window.state === 'disposed') return;
+    await new Promise<void>((resolve) => {
+      let done = false;
+      let timer: ReturnType<typeof setTimeout>;
+      let subscription: finch.Disposable | undefined;
+      const complete = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        subscription?.dispose();
+        resolve();
+      };
+      subscription = window.onDidDispose(complete);
+      timer = setTimeout(complete, 800);
+    });
+  };
+
+  const readWindowPosition = async (window: finch.CanvasWindow | undefined): Promise<WindowPosition | undefined> => {
+    if (!window || window.state === 'disposed') return undefined;
+    const requestId = randomUUID();
+    return new Promise<WindowPosition | undefined>((resolve) => {
+      let done = false;
+      let timer: ReturnType<typeof setTimeout>;
+      let subscription: finch.Disposable | undefined;
+      const complete = (position?: WindowPosition) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        subscription?.dispose();
+        resolve(position);
+      };
+      subscription = window.onDidReceiveMessage((message) => {
+        if (!isCanvasToHostMessage(message) || message.type !== 'windowPositionSnapshot' || message.requestId !== requestId) return;
+        complete({ x: message.x, y: message.y });
+      });
+      timer = setTimeout(() => complete(undefined), 250);
+      void window.postMessage({ type: 'requestWindowPosition', requestId }).catch(() => complete(undefined));
+    });
+  };
+
+  const catalogWebviewStrings = (): CatalogWebviewStrings => ({
+    title: ctx.i18n.t('canvas.catalog.title'),
+    subtitle: ctx.i18n.t('canvas.catalog.subtitle'),
+    loading: ctx.i18n.t('webview.catalog.loading'),
+    installing: ctx.i18n.t('webview.catalog.installing'),
+    install: ctx.i18n.t('webview.catalog.install'),
+    installed: ctx.i18n.t('webview.catalog.installed'),
+    remove: ctx.i18n.t('webview.catalog.remove'),
+    noResults: ctx.i18n.t('canvas.catalog.noResults'),
+  });
+
+  interface CatalogPanelState {
+    panel: finch.AppPanel;
+    catalog: PetdexCatalogItem[];
+    installedPetNames: Set<string>;
+    removablePetNames: Set<string>;
+    pendingRemovalNames: Set<string>;
+    pendingInstallNames: Set<string>;
+    installQueue: Promise<void>;
+    previewDataUrls: Map<string, string>;
+    status: 'loading' | 'idle' | 'error';
+    message?: string;
+  }
+
+  const catalogPanels = new Map<string, CatalogPanelState>();
+  const attachedCatalogPanels = new Set<string>();
+
+  const postCatalogData = async (state: CatalogPanelState): Promise<void> => {
+    const message: HostToCatalogWebviewMessage = {
+      type: 'catalogData',
+      strings: catalogWebviewStrings(),
+      pets: state.catalog.map((pet) => ({
+        slug: pet.slug,
+        displayName: pet.displayName,
+        description: pet.description,
+        installed: state.installedPetNames.has(pet.slug),
+        removable: state.removablePetNames.has(pet.slug),
+      })),
+    };
+    await state.panel.postMessage(message);
+  };
+
+  const postCatalogStatus = async (state: CatalogPanelState): Promise<void> => {
+    const message: HostToCatalogWebviewMessage = {
+      type: 'catalogStatus',
+      status: state.status,
+      message: state.message,
+    };
+    await state.panel.postMessage(message);
+  };
+
+  const postCatalogInstallStatus = async (state: CatalogPanelState, status: 'installing' | 'idle', slug: string): Promise<void> => {
+    const message: HostToCatalogWebviewMessage = { type: 'catalogStatus', status, slug };
+    await state.panel.postMessage(message);
+  };
+
+  const postPendingCatalogInstalls = async (state: CatalogPanelState): Promise<void> => {
+    for (const slug of state.pendingInstallNames) await postCatalogInstallStatus(state, 'installing', slug);
+  };
+
+  const postCatalogPreview = async (state: CatalogPanelState, slug: string, dataUrl: string): Promise<void> => {
+    const message: HostToCatalogWebviewMessage = { type: 'catalogPreview', slug, dataUrl };
+    await state.panel.postMessage(message);
+  };
+
+  const postCachedCatalogPreviews = async (state: CatalogPanelState): Promise<void> => {
+    for (const [slug, dataUrl] of state.previewDataUrls) await postCatalogPreview(state, slug, dataUrl);
+  };
+
+  const loadCatalogPreviews = async (state: CatalogPanelState): Promise<void> => {
+    const queue = state.catalog.filter((pet) => !state.previewDataUrls.has(pet.slug));
+    const worker = async () => {
+      while (queue.length && catalogPanels.get(state.panel.id) === state) {
+        const pet = queue.shift();
+        if (!pet) return;
+        const preview = await fetchPetdexPreview(pet);
+        if (!preview || catalogPanels.get(state.panel.id) !== state) continue;
+        const dataUrl = `data:${preview.mimeType};base64,${preview.data}`;
+        state.previewDataUrls.set(pet.slug, dataUrl);
+        await postCatalogPreview(state, pet.slug, dataUrl);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
+  };
+
+  const installCatalogPet = async (state: CatalogPanelState, slug: string): Promise<void> => {
+    if (state.status !== 'idle' || state.installedPetNames.has(slug) || state.pendingInstallNames.has(slug) || state.pendingRemovalNames.has(slug)) return;
+    const selected = state.catalog.find((pet) => pet.slug === slug);
+    if (!selected) {
+      void ctx.ui.showToast({
+        title: ctx.i18n.t('petCatalog.installFailed'),
+        description: ctx.i18n.t('petCatalog.invalidSelection'),
+        variant: 'error',
+      }).catch((error: unknown) => ctx.logger.warn('show invalid pet selection toast failed', conciseError(error)));
+      return;
+    }
+    state.pendingInstallNames.add(slug);
+    await postCatalogInstallStatus(state, 'installing', slug);
+    state.installQueue = state.installQueue.then(async () => {
+      try {
+        const installed = await importers.importPetSource(selected.pageUrl);
+        state.installedPetNames.add(selected.slug);
+        state.removablePetNames.add(selected.slug);
+        await visibility.set(true);
+        await open();
+        notifyControlState();
+        await postCatalogData(state);
+        void ctx.ui.showToast({
+          title: ctx.i18n.t('petCatalog.installed', { name: installed.displayName }),
+          variant: 'success',
+        }).catch((error: unknown) => {
+          ctx.logger.warn('show installed pet toast failed', conciseError(error));
+        });
+      } catch (error) {
+        void ctx.ui.showToast({
+          title: ctx.i18n.t('petCatalog.installFailed'),
+          description: conciseError(error),
+          variant: 'error',
+        }).catch((toastError: unknown) => {
+          ctx.logger.warn('show install pet error toast failed', conciseError(toastError));
+        });
+      } finally {
+        state.pendingInstallNames.delete(slug);
+        await postCatalogInstallStatus(state, 'idle', slug).catch(() => undefined);
+      }
+    });
+  };
+
+  const removeCatalogPet = async (state: CatalogPanelState, slug: string): Promise<void> => {
+    if (state.status !== 'idle' || !beginCatalogRemoval(state, slug)) return;
+    await postCatalogData(state);
+    try {
+      await removePetFromMenu(slug);
+      finishCatalogRemoval(state, slug);
+    } catch (error) {
+      rollbackCatalogRemoval(state, slug);
+      await postCatalogData(state);
+      void ctx.ui.showToast({
+        title: ctx.i18n.t('webview.catalog.removeFailed'),
+        description: conciseError(error),
+        variant: 'error',
+      }).catch((toastError: unknown) => {
+        ctx.logger.warn('show remove pet error toast failed', conciseError(toastError));
+      });
+    }
+  };
+
+  const attachCatalogPanel = (panel: finch.AppPanel): void => {
+    if (attachedCatalogPanels.has(panel.id)) return;
+    attachedCatalogPanels.add(panel.id);
+    ctx.subscriptions.push(panel);
+    ctx.subscriptions.push(panel.onDidReceiveMessage((message) => {
+      if (!isCatalogWebviewToHostMessage(message)) return;
+      const state = catalogPanels.get(panel.id);
+      if (!state) return;
+      if (message.type === 'catalogReady') {
+        void postCatalogData(state)
+          .then(() => postCatalogStatus(state))
+          .then(() => postPendingCatalogInstalls(state))
+          .then(() => postCachedCatalogPreviews(state))
+          .catch((error: unknown) => ctx.logger.warn('initialize pet gallery failed', conciseError(error)));
+        return;
+      }
+      if (message.type === 'catalogRemove') {
+        void removeCatalogPet(state, message.slug)
+          .catch((error: unknown) => ctx.logger.warn('remove gallery pet failed', conciseError(error)));
+        return;
+      }
+      void installCatalogPet(state, message.slug)
+        .catch((error: unknown) => ctx.logger.warn('install gallery pet failed', conciseError(error)));
+    }));
+    ctx.subscriptions.push(panel.onDidDispose(() => {
+      attachedCatalogPanels.delete(panel.id);
+      catalogPanels.delete(panel.id);
+    }));
+  };
+
+  ctx.subscriptions.push(ctx.ui.onDidOpenPanel((panel) => {
+    if (panel.view !== 'appView') attachCatalogPanel(panel);
+  }));
+
+  const installPetFromCatalog = async (): Promise<void> => {
+    let panel: finch.AppPanel;
+    try {
+      panel = ctx.ui.createPanel({ instanceMode: 'single' });
+      attachCatalogPanel(panel);
+      const existing = catalogPanels.get(panel.id);
+      if (existing?.pendingInstallNames.size) {
+        await panel.reveal();
+        return;
+      }
+      const state: CatalogPanelState = {
+        panel,
+        catalog: [],
+        installedPetNames: new Set<string>(),
+        removablePetNames: new Set<string>(),
+        pendingRemovalNames: new Set<string>(),
+        pendingInstallNames: new Set<string>(),
+        installQueue: Promise.resolve(),
+        previewDataUrls: new Map<string, string>(),
+        status: 'loading',
+      };
+      catalogPanels.set(panel.id, state);
+      await panel.reveal();
+      await postCatalogData(state);
+      await postCatalogStatus(state);
+
+      const [catalog, installedPets] = await Promise.all([
+        fetchPetdexCatalog(30),
+        library.listPets(),
+      ]);
+      state.catalog = catalog;
+      state.installedPetNames = new Set(installedPets
+        .filter((pet) => pet.health === 'ok' || pet.health === 'external')
+        .map((pet) => pet.name));
+      state.removablePetNames = new Set(installedPets
+        .filter((pet) => (pet.health === 'ok' || pet.health === 'external') && pet.removable)
+        .map((pet) => pet.name));
+      state.status = 'idle';
+      state.message = undefined;
+      await postCatalogData(state);
+      await postCatalogStatus(state);
+      void loadCatalogPreviews(state)
+        .catch((error: unknown) => ctx.logger.warn('load pet gallery previews failed', conciseError(error)));
+    } catch (error) {
+      const state = panel! ? catalogPanels.get(panel.id) : undefined;
+      if (state) {
+        state.status = 'error';
+        state.message = conciseError(error);
+        await postCatalogStatus(state).catch(() => undefined);
+      }
+      await ctx.ui.showToast({
+        title: ctx.i18n.t('petCatalog.loadFailed'),
+        description: conciseError(error),
+        variant: 'error',
+      });
+    }
+  };
 
   const usablePets = async () => (await library.listPets())
     .filter((pet) => pet.health === 'ok' || pet.health === 'external');
@@ -447,6 +798,77 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
   const noAvailablePetMessage = () => ctx.i18n.t('pet.noAvailable');
 
   const managementHandlers: PetManagementHandlers = {
+    async pet_catalog(params) {
+      const requestedLimit = typeof params.limit === 'number' && Number.isFinite(params.limit) ? Math.round(params.limit) : 6;
+      const catalog = await fetchPetdexCatalog(Math.max(3, Math.min(8, requestedLimit)));
+      let renderer = windows.current;
+      let temporaryRenderer: finch.CanvasWindow | undefined;
+      if (!renderer) {
+        temporaryRenderer = ctx.ui.createCanvasWindow({
+          entry: 'pet-canvas.js',
+          width: 1,
+          height: 1,
+          x: -10_000,
+          y: -10_000,
+          transparent: true,
+          clickThrough: true,
+          allowOffscreen: true,
+          frameRate: 15,
+          initialData: {
+            initialAppId: 'thumbnail-renderer',
+            strings: canvasStrings(),
+          },
+        });
+        temporaryRenderer.hide();
+        await temporaryRenderer.ready;
+        renderer = temporaryRenderer;
+      }
+      const renderThumbnail = async (preview: Awaited<ReturnType<typeof fetchPetdexPreview>>) => {
+        if (!preview || !renderer) return undefined;
+        const requestId = randomUUID();
+        return new Promise<{ data: string; mimeType: 'image/png' } | undefined>((resolve) => {
+          let settled = false;
+          let timer: ReturnType<typeof setTimeout>;
+          let subscription: finch.Disposable | undefined;
+          const finish = (value?: { data: string; mimeType: 'image/png' }) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            subscription?.dispose();
+            resolve(value);
+          };
+          subscription = renderer!.onDidReceiveMessage((message) => {
+            if (!isCanvasToHostMessage(message) || message.type !== 'catalogThumbnailRendered' || message.requestId !== requestId) return;
+            finish(message.data ? { data: message.data, mimeType: 'image/png' } : undefined);
+          });
+          timer = setTimeout(() => finish(), 5_000);
+          void renderer!.postMessage({
+            type: 'renderCatalogThumbnail',
+            requestId,
+            dataUrl: `data:${preview.mimeType};base64,${preview.data}`,
+          }).catch(() => finish());
+        });
+      };
+      try {
+        const previews = await Promise.all(catalog.map(fetchPetdexPreview));
+        const thumbnails = await Promise.all(previews.map(renderThumbnail));
+        const content: PetManagementContent[] = [{
+          type: 'text',
+          text: '请把下面这些 Petdex 候选展示给用户，并让用户按名称或序号选择。用户确认前不要安装，也不要要求用户复制链接。',
+        }];
+        catalog.forEach((pet, index) => {
+          content.push({
+            type: 'text',
+            text: `${index + 1}. ${pet.displayName}\nslug: ${pet.slug}\n${pet.description}\n安装源: ${pet.pageUrl}`,
+          });
+          const thumbnail = thumbnails[index];
+          if (thumbnail) content.push({ type: 'image', ...thumbnail });
+        });
+        return { content };
+      } finally {
+        temporaryRenderer?.dispose();
+      }
+    },
     async pet_list() {
       const pets = await library.listPets();
       if (!pets.length) return { isError: true, content: [{ type: 'text', text: noAvailablePetMessage() }] };
@@ -511,6 +933,21 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     },
   };
 
+  const removePetFromMenu = async (name: string): Promise<void> => {
+    const pet = (await library.listPets()).find((item) => item.name === name && item.kind !== 'builtin');
+    if (!pet) throw new Error(`custom pet is unavailable: ${name}`);
+    const result = await managementHandlers.pet_remove({ name });
+    if (result.isError) {
+      const message = result.content.find((item) => item.type === 'text');
+      throw new Error(message?.type === 'text' ? message.text : `failed to remove pet: ${name}`);
+    }
+    await ctx.ui.showToast({
+      title: ctx.i18n.t('composerActions.pet-toggle.removedPet', { name: pet.displayName }),
+      variant: 'success',
+    });
+    notifyControlState();
+  };
+
   const managementIpc = createPetManagementIpcServer(managementHandlers, ctx.logger);
   void managementIpc.start().catch((err: unknown) => {
     ctx.logger.warn('start pet management IPC failed', err instanceof Error ? err.message : String(err));
@@ -560,137 +997,224 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     },
   });
 
-  const applyConfiguredFirstPet = async () => {
-    const configured = ctx.settings.get<string>('firstPet')?.trim();
-    if (!configured) return;
-    const applied = await ctx.storage.get<string>('settings.firstPet.applied');
-    if (applied === configured && await library.findInstalledPetById(configured)) return;
-    await importers.importPetSource(`https://petdex.dev/pets/${encodeURIComponent(configured)}`);
-    await ctx.storage.set('settings.firstPet.applied', configured);
-    notifyControlState();
-  };
-
-  const showNoPetToast = async (actions: finch.ComposerActionActions) => {
-    const result = await ctx.ui.showToast({
-      title: ctx.i18n.t('composerActions.pet-toggle.noPetTitle'),
-      description: ctx.i18n.t('composerActions.pet-toggle.noPetDescription'),
-      variant: 'warning',
-      action: { label: ctx.i18n.t('composerActions.pet-toggle.install') },
-    });
-    if (result.action === 'action') await actions.composer.fill(ctx.i18n.t('composerActions.pet-toggle.installPrompt'));
-  };
+  const runtimeFeedbackMenuItem = (): finch.ComposerActionMenuItem => ({
+    id: 'runtime-feedback',
+    label: ctx.i18n.t('settingsMenu.runtimeFeedback'),
+    iconName: 'sliders-horizontal',
+    children: [
+      {
+        id: 'runtime:thinking',
+        label: ctx.i18n.t('settingsMenu.showProgress'),
+        current: runtimeFeedback.showThinking,
+      },
+      {
+        id: 'runtime:result',
+        label: ctx.i18n.t('settingsMenu.notifyResult'),
+        current: runtimeFeedback.notifyResult,
+      },
+      {
+        id: 'runtime:waiting',
+        label: ctx.i18n.t('settingsMenu.notifyWaiting'),
+        current: runtimeFeedback.notifyWaiting,
+      },
+    ],
+  });
 
   petToggleAction = ctx.composerActions.register('pet-toggle', {
     async getBadge() {
       return { text: 'Finch Pet', active: visibility.snapshot.desired };
     },
     async getMenu() {
+      await runtimeFeedbackReady;
       const pets = await library.listPets();
       const selectablePets = pets.filter((pet) => pet.health === 'ok' || pet.health === 'external');
-      const petReady = selectablePets.length > 0;
-      const petChildren: finch.ComposerActionMenuItem[] = selectablePets.length
-        ? selectablePets.map((pet) => ({
-            id: `select:${pet.name}`,
-            label: pet.displayName,
-            description: ctx.i18n.t(`composerActions.pet-toggle.${pet.kind}`),
-            current: pet.selected,
-            disabled: pet.health !== 'ok' && pet.health !== 'external',
-          }))
-        : [{ id: 'select:none', label: ctx.i18n.t('composerActions.pet-toggle.noPets'), disabled: true }];
+      if (!selectablePets.length) {
+        return [
+          {
+            id: 'install:catalog',
+            label: ctx.i18n.t('composerActions.pet-toggle.chooseFromPetdex'),
+            iconName: 'list',
+          },
+          {
+            id: 'install:chat',
+            label: ctx.i18n.t('composerActions.pet-toggle.chooseWithFinch'),
+            iconName: 'message-circle',
+          },
+          { id: 'separator:runtime', label: '', separator: true },
+          runtimeFeedbackMenuItem(),
+        ];
+      }
+      const petItems: finch.ComposerActionMenuItem[] = selectablePets.map((pet) => ({
+        id: `select:${pet.name}`,
+        label: pet.displayName,
+        current: pet.selected,
+        ...(pet.kind !== 'builtin' ? {
+          trailingButton: {
+            id: `remove:${pet.name}`,
+            iconName: 'ext:finch-pet/trash',
+            tooltip: ctx.i18n.t('composerActions.pet-toggle.removePet'),
+          },
+        } : {}),
+      }));
 
       return [
+        ...petItems,
+        { id: 'separator:actions', label: '', separator: true },
         {
-          id: visibility.snapshot.desired ? 'visibility:hide' : 'visibility:show',
-          label: ctx.i18n.t(`composerActions.pet-toggle.${visibility.snapshot.desired ? 'hidePet' : 'showPet'}`),
-          iconName: visibility.snapshot.desired ? 'toggle-right' : 'toggle-left',
-          disabled: !visibility.snapshot.desired && !petReady,
-          description: !visibility.snapshot.desired && !petReady ? ctx.i18n.t('composerActions.pet-toggle.installFirst') : undefined,
-        },
-        {
-          id: 'select-pet',
-          label: ctx.i18n.t('composerActions.pet-toggle.selectPet'),
-          iconName: 'list',
-          children: petChildren,
+          id: 'add-pet',
+          label: ctx.i18n.t('composerActions.pet-toggle.addPet'),
+          iconName: 'ext:finch-pet/add',
+          children: [
+            {
+              id: 'install:catalog',
+              label: ctx.i18n.t('composerActions.pet-toggle.chooseFromPetdex'),
+              iconName: 'list',
+            },
+            {
+              id: 'install:chat',
+              label: ctx.i18n.t('composerActions.pet-toggle.chooseWithFinch'),
+              iconName: 'message-circle',
+            },
+          ],
         },
         {
           id: 'interact',
           label: ctx.i18n.t('composerActions.pet-toggle.interact'),
           iconName: 'sparkles',
-          disabled: !petReady,
-          description: !petReady ? ctx.i18n.t('composerActions.pet-toggle.installFirst') : undefined,
           children: [
-            { id: 'interact:waving', label: ctx.i18n.t('composerActions.pet-toggle.wave') },
-            { id: 'interact:jumping', label: ctx.i18n.t('composerActions.pet-toggle.jump') },
+            { id: 'interact:waving', label: ctx.i18n.t('composerActions.pet-toggle.wave'), iconName: 'sparkles' },
+            { id: 'interact:jumping', label: ctx.i18n.t('composerActions.pet-toggle.jump'), iconName: 'zap' },
+            {
+              id: gameActive ? 'interact:flappy-exit' : 'interact:flappy',
+              label: ctx.i18n.t(`settingsMenu.${gameActive ? 'exitGame' : 'playGame'}`),
+              iconName: 'gamepad-2',
+            },
           ],
         },
+        runtimeFeedbackMenuItem(),
+        { id: 'separator:visibility', label: '', separator: true },
         {
-          id: 'install',
-          label: ctx.i18n.t('composerActions.pet-toggle.addPet'),
-          iconName: 'plus',
-          separator: true,
+          id: visibility.snapshot.desired ? 'visibility:hide' : 'visibility:show',
+          label: ctx.i18n.t(`composerActions.pet-toggle.${visibility.snapshot.desired ? 'hidePet' : 'showPet'}`),
+          iconName: visibility.snapshot.desired ? 'ext:finch-pet/eye-off' : 'ext:finch-pet/eye',
         },
       ];
     },
     async execute(_context, itemId, actions) {
-      if (itemId === 'visibility:hide') {
+      if (itemId.startsWith('__trailing__:remove:')) {
+        await removePetFromMenu(itemId.slice('__trailing__:remove:'.length));
+      } else if (itemId === 'visibility:hide') {
         await hidePet();
       } else if (itemId === 'visibility:show') {
         try {
           await showPet();
         } catch (err) {
           if (!(err instanceof NoAvailablePetError)) throw err;
-          await showNoPetToast(actions);
+          await installPetFromCatalog();
         }
       } else if (itemId.startsWith('select:') && itemId !== 'select:none') {
         const name = itemId.slice('select:'.length);
         const pet = (await library.listPets()).find((item) => item.name === name && item.health !== 'missing' && item.health !== 'invalid');
         if (!pet) throw new Error(`pet is unavailable: ${name}`);
         await selectInstalledPet(pet);
+      } else if (itemId === 'runtime:thinking') {
+        await runtimeFeedbackReady;
+        runtimeFeedback.showThinking = !runtimeFeedback.showThinking;
+        await ctx.storage.set('runtime.showThinking', runtimeFeedback.showThinking);
+        await runtime.refreshRuntimePreferences();
+      } else if (itemId === 'runtime:result') {
+        await runtimeFeedbackReady;
+        runtimeFeedback.notifyResult = !runtimeFeedback.notifyResult;
+        await ctx.storage.set('runtime.notifyResult', runtimeFeedback.notifyResult);
+        await runtime.refreshRuntimePreferences();
+      } else if (itemId === 'runtime:waiting') {
+        await runtimeFeedbackReady;
+        runtimeFeedback.notifyWaiting = !runtimeFeedback.notifyWaiting;
+        await ctx.storage.set('runtime.notifyWaiting', runtimeFeedback.notifyWaiting);
+        await runtime.refreshRuntimePreferences();
       } else if (itemId === 'interact:waving' || itemId === 'interact:jumping') {
         const state = itemId === 'interact:waving' ? 'waving' : 'jumping';
         await postToPet({ type: 'setState', state, playMode: 'once', transientMs: 0 });
-      } else if (itemId === 'install') {
-        await actions.composer.fill(ctx.i18n.t('composerActions.pet-toggle.installPrompt'));
+      } else if (itemId === 'interact:flappy') {
+        const win = await showPet();
+        await win.postMessage({ type: 'prepareGame' });
+      } else if (itemId === 'interact:flappy-exit') {
+        await exitGame();
+      } else if (itemId === 'install:catalog') {
+        await installPetFromCatalog();
+      } else if (itemId === 'install:chat') {
+        const session = await ctx.sessions.create({
+          title: ctx.i18n.t('composerActions.pet-toggle.chooseSessionTitle'),
+          activity: 'interactive',
+          permissionMode: 'ask',
+          initialMessage: {
+            text: ctx.i18n.t('composerActions.pet-toggle.installPrompt'),
+            idempotencyKey: `choose-pet-${randomUUID()}`,
+          },
+        });
+        scheduleSessionOpen(session.sessionId, (id) => actions.navigation.openSession(id));
       }
-      petToggleAction?.notifyUpdate();
+      notifyControlState();
     },
   });
 
   settingsMenu = ctx.settingsMenu.register({
     async getMenu() {
-      const petReady = await hasUsablePet();
+      const [, petAvailable] = await Promise.all([runtimeFeedbackReady, hasUsablePet()]);
       return [
         {
-          id: gameActive ? 'game:exit' : 'game:play',
-          label: ctx.i18n.t(`settingsMenu.${gameActive ? 'exitGame' : 'playGame'}`),
-          iconName: 'gamepad-2',
-          description: gameActive
-            ? ctx.i18n.t('settingsMenu.playing')
-            : !petReady ? ctx.i18n.t('settingsMenu.installFirst') : undefined,
-          disabled: !gameActive && !petReady,
+          id: 'runtime-feedback',
+          label: ctx.i18n.t('settingsMenu.runtimeFeedback'),
+          iconName: 'sliders-horizontal',
+          children: [
+            {
+              id: 'runtime:thinking',
+              label: ctx.i18n.t('settingsMenu.showProgress'),
+              current: runtimeFeedback.showThinking,
+            },
+            {
+              id: 'runtime:result',
+              label: ctx.i18n.t('settingsMenu.notifyResult'),
+              current: runtimeFeedback.notifyResult,
+            },
+            {
+              id: 'runtime:waiting',
+              label: ctx.i18n.t('settingsMenu.notifyWaiting'),
+              current: runtimeFeedback.notifyWaiting,
+            },
+          ],
         },
+        { id: 'separator:visibility', label: '', separator: true },
         {
-          id: visibility.snapshot.desired ? 'pet:hide' : 'pet:show',
-          label: ctx.i18n.t(`settingsMenu.${visibility.snapshot.desired ? 'hidePet' : 'showPet'}`),
-          iconName: visibility.snapshot.desired ? 'toggle-right' : 'toggle-left',
-          disabled: !visibility.snapshot.desired && !petReady,
-          description: !visibility.snapshot.desired && !petReady ? ctx.i18n.t('settingsMenu.installFirst') : undefined,
+          id: visibility.snapshot.desired ? 'visibility:hide' : 'visibility:show',
+          label: ctx.i18n.t(`composerActions.pet-toggle.${visibility.snapshot.desired ? 'hidePet' : 'showPet'}`),
+          iconName: visibility.snapshot.desired ? 'ext:finch-pet/eye-off' : 'ext:finch-pet/eye',
+          disabled: !petAvailable,
         },
       ];
     },
     async execute(_context, itemId) {
-      if (itemId === 'game:play') {
-        const win = await showPet();
-        await win.postMessage({ type: 'prepareGame' });
-      } else if (itemId === 'game:exit') {
-        await exitGame();
-      } else if (itemId === 'pet:show') {
+      if (itemId === 'visibility:show') {
         await showPet();
-      } else if (itemId === 'pet:hide') {
+      } else if (itemId === 'visibility:hide') {
         await hidePet();
+      } else if (itemId === 'runtime:thinking') {
+        await runtimeFeedbackReady;
+        runtimeFeedback.showThinking = !runtimeFeedback.showThinking;
+        await ctx.storage.set('runtime.showThinking', runtimeFeedback.showThinking);
+        await runtime.refreshRuntimePreferences();
+      } else if (itemId === 'runtime:result') {
+        await runtimeFeedbackReady;
+        runtimeFeedback.notifyResult = !runtimeFeedback.notifyResult;
+        await ctx.storage.set('runtime.notifyResult', runtimeFeedback.notifyResult);
+        await runtime.refreshRuntimePreferences();
+      } else if (itemId === 'runtime:waiting') {
+        await runtimeFeedbackReady;
+        runtimeFeedback.notifyWaiting = !runtimeFeedback.notifyWaiting;
+        await ctx.storage.set('runtime.notifyWaiting', runtimeFeedback.notifyWaiting);
+        await runtime.refreshRuntimePreferences();
       }
-      petToggleAction?.notifyUpdate();
-      settingsMenu?.notifyUpdate();
+      notifyControlState();
     },
   });
 
@@ -760,9 +1284,6 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
   );
 
   void (async () => {
-    await applyConfiguredFirstPet().catch((err: unknown) => {
-      ctx.logger.warn('install configured first pet failed', err instanceof Error ? err.message : String(err));
-    });
     const petReady = await hasUsablePet();
     const visible = await visibility.restore(petReady);
     if (visible) await open();

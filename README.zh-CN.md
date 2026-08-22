@@ -13,6 +13,7 @@ Finch 桌宠扩展。它可以在桌面上显示一个兼容 Petdex 的悬浮宠
 - 支持显示短气泡消息。
 - 可响应 Finch Agent 的运行状态，例如工作中、等待授权、失败、后台任务完成等。
 - 支持从本地或远程来源导入 Petdex 兼容宠物。
+- 内置 Finch Webview 宠物画廊，可浏览 Petdex 热门宠物并直接安装。
 - 可通过 Finch 工具管理当前选中的宠物。
 
 ## 支持的宠物来源
@@ -39,6 +40,7 @@ spritesheet 会按固定 **8 列 × 9 行** 网格解析。基础帧尺寸是 19
 
 | MCP 工具 | 说明 |
 |---|---|
+| `pet_catalog` | 获取当前 Petdex 候选及预览图，让用户确认后再安装。 |
 | `pet_list` | 列出可用宠物。 |
 | `pet_select` | 按名称选择当前宠物。 |
 | `pet_add` | 导入 Petdex 兼容宠物。 |
@@ -58,10 +60,17 @@ spritesheet 会按固定 **8 列 × 9 行** 网格解析。基础帧尺寸是 19
 
 ```bash
 npm install
-npm run build
+npm run check
+npx @finchtoys/minitools doctor .
 ```
 
-`npm run build` 会从 `canvas/` 构建 Canvas 端脚本，并生成 `pet-canvas.js`。
+`npm run build` 会构建宿主、游戏核心、Canvas 脚本 `pet-canvas.js`，以及 `dist/` 下的 Webview 宠物画廊。
+
+小工具清单使用根目录下独立的 `finch.json`。本地安装或更新：
+
+```bash
+npx @finchtoys/minitools add ./
+```
 
 ## 许可证
 

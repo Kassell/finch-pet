@@ -1,0 +1,69 @@
+{
+  "manifestVersion": 1,
+  "minVersion": "1.6.0-beta.2",
+  "name": "Finch Pet",
+  "description": "Desktop pet for Finch.",
+  "systemPrompt": "This extension provides a desktop pet. Use pet_control for common show, hide, animation, and speech actions. Pet library management tools are provided by the local finch-pet MCP server. When the user wants to add a pet without naming an exact one, discover and call pet_catalog first, present its current Petdex candidates with preview images and short descriptions, and ask the user to choose. Only call pet_add after the user confirms a candidate; use that candidate's page URL directly and never ask the user to copy a Petdex link.",
+  "toolMeta": {
+    "name": "Finch Pet"
+  },
+  "main": "dist/index.js",
+  "activationEvents": [
+    "onStartup"
+  ],
+  "contributes": {
+    "tools": true,
+    "skills": false,
+    "settingsMenu": {
+      "icon": "ext:finch-pet/action",
+      "tooltip": "Desktop pet settings"
+    },
+    "appPanel": {
+      "title": "Pet Gallery",
+      "icon": "ext:finch-pet/action",
+      "viewType": "finch-pet.gallery",
+      "instanceMode": "single",
+      "showInLauncher": false,
+      "source": {
+        "type": "local",
+        "path": "dist/pet-catalog.html"
+      }
+    },
+    "composerActions": [
+      {
+        "id": "pet-toggle",
+        "icon": "ext:finch-pet/action",
+        "tooltip": "Control desktop pet"
+      }
+    ],
+    "mcpServers": [
+      {
+        "name": "finch-pet",
+        "description": "Browse Petdex candidates and manage the local Finch Pet library. Tools are discovered lazily through MCP."
+      }
+    ],
+    "iconPacks": [
+      {
+        "id": "finch-pet",
+        "label": "Finch Pet Icons"
+      }
+    ]
+  },
+  "requires": {
+    "capabilities": [
+      "mcp.client"
+    ]
+  },
+  "extensionType": "community",
+  "categories": [
+    "productivity"
+  ],
+  "privacyPolicyUrl": "https://finchwork.app/privacy",
+  "termsOfServiceUrl": "https://finchwork.app/terms",
+  "permissions": {
+    "filesystem": "readwrite",
+    "network": true,
+    "shell": true,
+    "sessions": true
+  }
+}

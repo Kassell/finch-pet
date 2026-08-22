@@ -45,6 +45,12 @@ export class DomInputAdapter {
       value.preventDefault();
       value.stopPropagation();
     });
+    listen(target, "wheel", (event) => {
+      const value = event as WheelEvent;
+      if (!this.game.wheel(value.deltaY)) return;
+      value.preventDefault();
+      value.stopPropagation();
+    });
     listen(window, "blur", () => this.game.blur());
   }
 

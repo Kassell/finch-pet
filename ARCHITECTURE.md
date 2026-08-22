@@ -1,19 +1,22 @@
-# Finch Pet 游戏架构
+# Finch Pet 运行时架构
 
 ## 产品模型
 
-Finch Pet 是一个纯 `CanvasRenderingContext2D` Runtime，运行时只有两种互斥内容：
+Finch Pet 由两个相互独立的界面层组成：
 
 ```text
-Runtime
+Canvas Runtime
 ├── Pet                         桌面宠物
-└── App                         当前运行的一个应用
+└── App                         当前运行的一个 Canvas 应用
     ├── flappy-bird             现有小游戏
     ├── home                    未来的首页/房间 App
-    └── ...                     其他小游戏或功能 App
+    └── ...                     其他小游戏
+
+Webview AppPanel
+└── pet-catalog                 Petdex 响应式画廊与安装界面
 ```
 
-`home` 不是强制中间层，而是未来的普通 App。Pet 可以打开默认 App，也可以通过 `appId` 直接启动任何已注册 App。
+Pet 与 Canvas App 共享同一个浮动 `CanvasWindow` 并保持互斥；Petdex 画廊使用独立的 Finch `appPanel`，不会占用或关闭桌宠窗口。`home` 不是强制中间层，而是未来的普通 Canvas App。
 
 ## 项目结构
 
@@ -31,9 +34,7 @@ src/
 │   │   ├── assets/             spritesheet 解析
 │   │   └── ui/                 气泡布局与菜单
 │   ├── apps/
-│   │   └── flappy-bird/        自包含 App
-│   │       ├── flappy-bird-app.ts
-│   │       └── flappy-bird-game.ts
+│   │   └── flappy-bird/        自包含小游戏 App
 │   ├── input/                  DOM → Runtime 输入适配
 │   ├── platform/               Finch Canvas/Window bridge
 │   ├── systems/                Runtime 共享 System
@@ -43,8 +44,13 @@ src/
 │   ├── application/
 │   ├── infrastructure/
 │   └── platform/finch/
+├── webview/
+│   ├── pet-catalog.html        AppPanel 页面入口
+│   ├── pet-catalog.css         Finch 主题响应式样式
+│   └── pet-catalog.ts          Webview Bridge 与 DOM 交互
 ├── shared/
-│   └── protocol.ts             Host ↔ Runtime 唯一协议
+│   ├── protocol.ts             Host ↔ Canvas Runtime 协议
+│   └── catalog-webview-protocol.ts  Host ↔ 画廊 Webview 协议
 └── index.ts                    Finch 发布入口
 ```
 
@@ -53,7 +59,7 @@ src/
 - Pet 和 App 使用同一个互斥 Scene Runtime，不会同时更新或渲染。
 - `pet` 是 Runtime 内建 Scene，不属于 AppRegistry。
 - 所有 App 通过 `AppRegistry` 注册，Runtime 不硬编码 App 列表。
-- `gameMode { active: true, appId }` 直接启动目标 App。
+- `gameMode { active: true, appId }` 直接启动目标 App；初始化也可通过 `initialAppId` 直接进入 App。
 - `gameMode { active: false }` 返回 Pet。
 - 未传 `appId` 时为兼容旧 Host，默认启动 `flappy-bird`。
 - 未注册的 `appId` 必须失败，不允许静默打开错误 App。
@@ -90,10 +96,11 @@ Host 不运行游戏规则，只负责：
 - CanvasWindow 显示、隐藏、尺寸、位置和层级。
 - 用户显示意图与窗口竞态。
 - Pet 包、注册表、导入、Storage 与 MCP。
+- 创建 Petdex AppPanel，并通过 Webview Bridge 同步目录、安装状态和已安装标记。
 - 将目标 `appId` 原样传给 Runtime。
 - 加载 App 专属 Host 资源；例如仅 Flappy Bird 加载其音频。
 
-Host 与 Runtime 只依赖 `src/shared/protocol.ts`，Runtime Scene 不直接调用 Host 模块。
+Host 与 Canvas Runtime 只依赖 `src/shared/protocol.ts`；Host 与画廊只依赖 `src/shared/catalog-webview-protocol.ts`。Canvas Scene 和 Webview 页面都不直接调用 Host 模块。
 
 ## 新增 App
 

@@ -1,6 +1,6 @@
 {
   "name": "finch-pet",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "type": "module",
   "description": "Desktop pet for Finch.",
   "author": {
@@ -15,131 +15,18 @@
   "license": "MIT",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build:zip && npm run build:game-core && npm run build:canvas",
+    "build": "tsc -p tsconfig.json && npm run build:zip && npm run build:game-core && npm run build:canvas && npm run build:webview",
     "build:zip": "esbuild src/host/infrastructure/archive/zip.ts --bundle --platform=node --format=esm --target=node20 --charset=utf8 --outfile=dist/host/infrastructure/archive/zip.js",
     "build:game-core": "esbuild src/game/core/game.ts src/game/core/app-registry.ts src/game/pet/systems/pet-animation-system.ts src/game/pet/systems/pet-bubble-system.ts --bundle --platform=node --format=esm --target=node20 --charset=utf8 --outbase=src --outdir=dist",
     "build:canvas": "tsc -p tsconfig.canvas.json && esbuild src/game/main.ts --bundle --format=iife --charset=utf8 --outfile=pet-canvas.js --banner:js=\"/* 本文件由 src/game 源码构建生成,请勿直接编辑;运行 npm run build:canvas 重新生成。 */\"",
+    "build:webview": "esbuild src/webview/pet-catalog.ts --bundle --format=esm --target=es2022 --charset=utf8 --outfile=dist/pet-catalog.js && esbuild src/webview/pet-catalog.html src/webview/pet-catalog.css --outdir=dist --loader:.html=copy --loader:.css=copy",
     "test": "npm run build && node --test test/*.test.mjs",
-    "dev": "tsc -p tsconfig.json --watch"
-  },
-  "finch": {
-    "manifestVersion": 1,
-    "minVersion": "1.5.4",
-    "id": "finch-pet",
-    "name": "Finch Pet",
-    "description": "Desktop pet for Finch.",
-    "systemPrompt": "This extension provides a desktop pet. Use pet_control for common show, hide, animation, and speech actions. Pet library management tools (pet_list, pet_select, pet_add, pet_remove) are provided by the local finch-pet MCP server and should be discovered only when needed.",
-    "toolMeta": {
-      "name": "Finch Pet"
-    },
-    "promptGuides": [
-      {
-        "id": "show-pet",
-        "title": "Show pet",
-        "description": "Show the current pet",
-        "prompt": "Show the pet"
-      },
-      {
-        "id": "list-pets",
-        "title": "List pets",
-        "description": "List available pets",
-        "prompt": "List available pets"
-      }
-    ],
-    "main": "dist/index.js",
-    "activationEvents": [
-      "onStartup"
-    ],
-    "contributes": {
-      "tools": true,
-      "skills": false,
-      "settingsMenu": {
-        "icon": "gamepad-2",
-        "tooltip": "Pet and game controls"
-      },
-      "composerActions": [
-        {
-          "id": "pet-toggle",
-          "icon": "ext:finch-pet/action",
-          "tooltip": "Control desktop pet"
-        }
-      ],
-      "mcpServers": [
-        {
-          "name": "finch-pet",
-          "description": "Manage the local Finch Pet library. Tools are discovered lazily through MCP."
-        }
-      ],
-      "iconPacks": [
-        {
-          "id": "finch-pet",
-          "label": "Finch Pet Icons"
-        }
-      ]
-    },
-    "requires": {
-      "capabilities": [
-        "mcp.client"
-      ]
-    },
-    "settings": {
-      "fields": [
-        {
-          "key": "firstPet",
-          "label": "Choose your first pet",
-          "type": "select",
-          "description": "Preview pets on Petdex, then save to install and select one.",
-          "default": "",
-          "options": [
-            {
-              "value": "",
-              "label": "Choose later"
-            },
-            {
-              "value": "boba",
-              "label": "Boba · cozy otter"
-            },
-            {
-              "value": "doraemon",
-              "label": "Doraemon · robot cat"
-            },
-            {
-              "value": "tiko",
-              "label": "Tiko · utility robot"
-            },
-            {
-              "value": "lulu-capybara-2",
-              "label": "噜噜 · capybara"
-            },
-            {
-              "value": "noir-webling",
-              "label": "Noir Webling · detective spider"
-            }
-          ]
-        },
-        {
-          "key": "petdexPreview",
-          "label": "Preview animated pets on Petdex",
-          "type": "link",
-          "href": "https://petdex.dev/#gallery",
-          "description": "Browse the full gallery before choosing."
-        }
-      ]
-    },
-    "extensionType": "community",
-    "categories": [
-      "productivity"
-    ],
-    "privacyPolicyUrl": "https://finchwork.app/privacy",
-    "termsOfServiceUrl": "https://finchwork.app/terms",
-    "permissions": {
-      "filesystem": "readwrite",
-      "network": true,
-      "shell": true
-    }
+    "dev": "tsc -p tsconfig.json --watch",
+    "check": "npm test",
+    "prepublishOnly": "npm run check"
   },
   "devDependencies": {
-    "@finchtoys/minitool-api": "^0.2.14",
+    "@finchtoys/minitool-api": "0.3.1",
     "@types/node": "^26.1.0",
     "esbuild": "^0.28.1",
     "fflate": "^0.8.3",
@@ -147,6 +34,7 @@
   },
   "files": [
     "dist/",
+    "finch.json",
     "pets/",
     "public/",
     "pet-canvas.js",

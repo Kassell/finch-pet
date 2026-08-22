@@ -20,6 +20,7 @@ export interface Scene {
   contextMenu?(x: number, y: number): boolean;
   message(message: HostToCanvasMessage): void;
   keyDown?(key: string): boolean;
+  wheel?(deltaY: number): boolean;
   blur?(): void;
   dispose(): void;
 }
@@ -96,6 +97,7 @@ export class Game {
   contextMenu(x: number, y: number): boolean { return this.active?.contextMenu?.(x, y) ?? false; }
   message(message: HostToCanvasMessage): void { this.active?.message(message); }
   keyDown(key: string): boolean { return this.active?.keyDown?.(key) ?? false; }
+  wheel(deltaY: number): boolean { return this.active?.wheel?.(deltaY) ?? false; }
   blur(): void { this.active?.blur?.(); }
 
   dispose(): void {

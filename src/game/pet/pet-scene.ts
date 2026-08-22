@@ -64,7 +64,9 @@ const GAME_WINDOW_WIDTH = 360;
 const GAME_WINDOW_HEIGHT = 696;
 /** Canvas 即使由旧版 Host 启动也能完整显示的英文安全回退。 */
 export const DEFAULT_CANVAS_STRINGS: CanvasStrings = {
-  menuPlayGame: "Play a game",
+  menuPlayGame: "Play",
+  menuWave: "Wave",
+  menuJump: "Jump",
   menuClosePet: "Close pet",
   gameHeader: "Flappy Finch",
   gameTitle: "FlappyFinch",
@@ -116,6 +118,7 @@ export interface PetInitialData {
   spriteDataUrl?: string;
   initialClickThrough?: boolean;
   initialGameMode?: boolean;
+  initialAppId?: string;
   strings?: CanvasStrings;
 }
 
@@ -202,6 +205,8 @@ export class PetScene implements Scene {
     this.animation = new PetAnimationSystem(FPS, (row) => this.frameCountForRow(row), () => this.cancelMouseAction());
     this.petMenu = new PetContextMenu(
       () => this.requestGameOpen(),
+      () => this.playSingleClick(),
+      () => this.playJump(),
       () => this.postToHost({ type: "exitPet" }),
       this.strings,
     );
@@ -867,15 +872,19 @@ export class PetScene implements Scene {
     this.postToHost({ type: "poke", state: this.state });
   }
 
+  private playJump(): void {
+    if (!this.canStartMouseAction()) return;
+    this.setState("jumping", { playMode: "once", source: "mouse" });
+    this.postToHost({ type: "poke", state: this.state });
+  }
+
   private playDoubleClick(): void {
     if (this.bubbleSessionId) {
       this.postToHost({ type: "openBubbleSession", sessionId: this.bubbleSessionId });
       this.clearBubble();
       return;
     }
-    if (!this.canStartMouseAction()) return;
-    this.setState("jumping", { playMode: "once", source: "mouse" });
-    this.postToHost({ type: "poke", state: this.state });
+    this.playJump();
   }
 
   contextMenu(x: number, y: number): boolean {

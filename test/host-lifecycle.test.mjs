@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PetVisibilityController } from '../dist/host/application/visibility-controller.js';
 import { CanvasWindowCoordinator } from '../dist/host/application/window-coordinator.js';
+import { parsePetdexCatalog } from '../dist/host/infrastructure/petdex-catalog.js';
 
 class MemoryStorage {
   values = new Map();
@@ -73,4 +74,12 @@ test('主动销毁先清空引用且幂等', () => {
   coordinator.disposeCurrent();
   assert.equal(coordinator.current, undefined);
   assert.equal(window.disposeCount, 1);
+});
+
+test('Petdex 目录只读取主画廊并拒绝非官方资源主机', () => {
+  const html = String.raw`\"slug\":\"surprise\",\"displayName\":\"Surprise\",\"description\":\"before gallery\",\"spritesheetPath\":\"https://assets.petdex.dev/pets/surprise/sprite.webp\"\"initial\":{\"pets\":[\"slug\":\"boba\",\"displayName\":\"Boba\",\"description\":\"Cozy otter\",\"spritesheetPath\":\"https://assets.petdex.dev/pets/boba/sprite.webp\",\"slug\":\"unsafe\",\"displayName\":\"Unsafe\",\"description\":\"Bad host\",\"spritesheetPath\":\"https://example.com/pet.webp\"]}`;
+  const pets = parsePetdexCatalog(html, 6);
+  assert.deepEqual(pets.map((pet) => pet.slug), ['boba']);
+  assert.equal(pets[0].pageUrl, 'https://petdex.dev/pets/boba');
+  assert.equal(pets[0].previewUrl, 'https://assets.petdex.dev/pets/boba/preview.webp');
 });
