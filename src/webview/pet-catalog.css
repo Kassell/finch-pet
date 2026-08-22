@@ -201,7 +201,17 @@ button, input { font: inherit; }
   line-height: 1.2;
   cursor: pointer;
   box-shadow: 0 3px 10px color-mix(in srgb, var(--finch-accent, #8b6bc4) 28%, transparent);
-  transition: filter 120ms ease, transform 120ms ease;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.92);
+  transition: filter 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+.pet-card.installable:not(.busy):hover .install-pet,
+.pet-card.installable:not(.busy):focus-within .install-pet {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
 }
 
 .install-pet:hover { filter: brightness(1.1); }
