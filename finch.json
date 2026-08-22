@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "minVersion": "1.6.0-beta.2",
+  "minVersion": "1.5.4",
   "name": "Finch Pet",
   "description": "Desktop pet for Finch.",
   "systemPrompt": "This extension provides a desktop pet. Use pet_control for common show, hide, animation, and speech actions. Pet library management tools are provided by the local finch-pet MCP server. When the user wants to add a pet without naming an exact one, discover and call pet_catalog first, present its current Petdex candidates with preview images and short descriptions, and ask the user to choose. Only call pet_add after the user confirms a candidate; use that candidate's page URL directly and never ask the user to copy a Petdex link.",

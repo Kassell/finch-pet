@@ -114,6 +114,8 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
   let petCenterX = rightAlignedPetCenterX;
   let windowPosition: WindowPosition | undefined;
   let positionSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  const supportsCatalogPanel = typeof ctx.ui.createPanel === 'function'
+    && typeof ctx.ui.onDidOpenPanel === 'function';
   const supportsDesktopSpaces = typeof ctx.app?.getInfo === 'function'
     ? ctx.app.getInfo()
         .then((info) => isVersionAtLeast(info.version, [1, 5, 1]))
@@ -154,6 +156,19 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
         ctx.logger.warn('open session deep link failed', error instanceof Error ? error.message : String(error));
       });
     }, 120);
+  };
+
+  const startPetSelectionSession = async (navigate?: (id: string) => Promise<void>): Promise<void> => {
+    const session = await ctx.sessions.create({
+      title: ctx.i18n.t('composerActions.pet-toggle.chooseSessionTitle'),
+      activity: 'interactive',
+      permissionMode: 'ask',
+      initialMessage: {
+        text: ctx.i18n.t('composerActions.pet-toggle.installPrompt'),
+        idempotencyKey: `choose-pet-${randomUUID()}`,
+      },
+    });
+    scheduleSessionOpen(session.sessionId, navigate);
   };
 
   const customPetsRoot = join(ctx.storagePath, 'pets');
@@ -730,11 +745,17 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     }));
   };
 
-  ctx.subscriptions.push(ctx.ui.onDidOpenPanel((panel) => {
-    if (panel.view !== 'appView') attachCatalogPanel(panel);
-  }));
+  if (supportsCatalogPanel) {
+    ctx.subscriptions.push(ctx.ui.onDidOpenPanel((panel) => {
+      if (panel.view !== 'appView') attachCatalogPanel(panel);
+    }));
+  }
 
   const installPetFromCatalog = async (): Promise<void> => {
+    if (!supportsCatalogPanel) {
+      await startPetSelectionSession();
+      return;
+    }
     let panel: finch.AppPanel;
     try {
       panel = ctx.ui.createPanel({ instanceMode: 'single' });
@@ -1030,11 +1051,11 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       const selectablePets = pets.filter((pet) => pet.health === 'ok' || pet.health === 'external');
       if (!selectablePets.length) {
         return [
-          {
+          ...(supportsCatalogPanel ? [{
             id: 'install:catalog',
             label: ctx.i18n.t('composerActions.pet-toggle.chooseFromPetdex'),
             iconName: 'list',
-          },
+          }] : []),
           {
             id: 'install:chat',
             label: ctx.i18n.t('composerActions.pet-toggle.chooseWithFinch'),
@@ -1065,11 +1086,11 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
           label: ctx.i18n.t('composerActions.pet-toggle.addPet'),
           iconName: 'ext:finch-pet/add',
           children: [
-            {
+            ...(supportsCatalogPanel ? [{
               id: 'install:catalog',
               label: ctx.i18n.t('composerActions.pet-toggle.chooseFromPetdex'),
               iconName: 'list',
-            },
+            }] : []),
             {
               id: 'install:chat',
               label: ctx.i18n.t('composerActions.pet-toggle.chooseWithFinch'),
@@ -1143,16 +1164,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       } else if (itemId === 'install:catalog') {
         await installPetFromCatalog();
       } else if (itemId === 'install:chat') {
-        const session = await ctx.sessions.create({
-          title: ctx.i18n.t('composerActions.pet-toggle.chooseSessionTitle'),
-          activity: 'interactive',
-          permissionMode: 'ask',
-          initialMessage: {
-            text: ctx.i18n.t('composerActions.pet-toggle.installPrompt'),
-            idempotencyKey: `choose-pet-${randomUUID()}`,
-          },
-        });
-        scheduleSessionOpen(session.sessionId, (id) => actions.navigation.openSession(id));
+        await startPetSelectionSession((id) => actions.navigation.openSession(id));
       }
       notifyControlState();
     },

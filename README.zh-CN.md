@@ -66,7 +66,9 @@ npx @finchtoys/minitools doctor .
 
 `npm run build` 会构建宿主、游戏核心、Canvas 脚本 `pet-canvas.js`，以及 `dist/` 下的 Webview 宠物画廊。
 
-小工具清单使用根目录下独立的 `finch.json`。本地安装或更新：
+小工具清单仅使用根目录下独立的 `finch.json`，不再保留旧式 `package.json#finch` 副本。最低支持 Finch 1.5.4；支持 Panel App 的宿主显示内置宠物画廊，较旧的兼容宿主则降级为通过普通 Finch 会话和本地 MCP 挑选宠物。
+
+本地安装或更新：
 
 ```bash
 npx @finchtoys/minitools add ./

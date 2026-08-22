@@ -65,7 +65,9 @@ npx @finchtoys/minitools doctor .
 
 `npm run build` builds the host, game core, Canvas bundle `pet-canvas.js`, and the Webview pet gallery under `dist/`.
 
-The mini tool manifest lives in the standalone root `finch.json`. Install or update locally with:
+The mini tool manifest lives only in the standalone root `finch.json`; there is no legacy `package.json#finch` copy. Finch 1.5.4 is the minimum supported version. Hosts with Panel App support show the built-in Pet Gallery, while older compatible hosts fall back to choosing pets through a normal Finch session and the local MCP server.
+
+Install or update locally with:
 
 ```bash
 npx @finchtoys/minitools add ./
