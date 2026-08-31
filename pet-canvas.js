@@ -1753,7 +1753,6 @@ ${this.strings.gameRestartHint}`
     c;
     w = 0;
     h = 0;
-    t = 0;
     /** 合并高刷新率显示器上的连续 rAF，降低透明窗口的清屏与合成开销。 */
     pendingFrameMs = 0;
     image;
@@ -2242,7 +2241,6 @@ ${this.strings.gameRestartHint}`
       if (!transitionActive && this.pendingFrameMs < PET_RENDER_INTERVAL_MS) return;
       const renderDt = this.pendingFrameMs;
       this.pendingFrameMs = 0;
-      this.t += renderDt / 1e3;
       const c = this.c;
       c.clearRect(0, 0, this.w, this.h);
       this.transition.begin(c, this.w, this.h);
@@ -2281,11 +2279,10 @@ ${this.strings.gameRestartHint}`
       const baseScale = Math.min(maxPetW / BASE_FRAME_WIDTH, maxPetH / BASE_FRAME_HEIGHT) * this.scale * PET_SIZE_RATIO;
       const jumpDenominator = Math.max(1, safeFrameCount - 1);
       const bounce = this.state === "jumping" ? Math.sin(safeFrameIndex / jumpDenominator * Math.PI) * 18 : 0;
-      const breathe = this.state === "idle" ? Math.sin(this.t * 3) * 2 : 0;
       const drawW = BASE_FRAME_WIDTH * baseScale;
       const drawH = BASE_FRAME_HEIGHT * baseScale;
       const x = (anchorX ?? this.petAnchorX) - drawW / 2;
-      const y = this.h - drawH - 14 - bounce + breathe;
+      const y = this.h - drawH - 14 - bounce;
       return { sx, sy, sourceW: frame.width, sourceH: frame.height, x, y, drawW, drawH, bounce };
     }
     drawBubble(petInfo) {

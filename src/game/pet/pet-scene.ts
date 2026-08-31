@@ -130,7 +130,6 @@ export class PetScene implements Scene {
   private c!: CanvasRenderingContext2D;
   private w = 0;
   private h = 0;
-  private t = 0;
   /** 合并高刷新率显示器上的连续 rAF，降低透明窗口的清屏与合成开销。 */
   private pendingFrameMs = 0;
 
@@ -706,7 +705,6 @@ export class PetScene implements Scene {
     if (!transitionActive && this.pendingFrameMs < PET_RENDER_INTERVAL_MS) return;
     const renderDt = this.pendingFrameMs;
     this.pendingFrameMs = 0;
-    this.t += renderDt / 1000;
     const c = this.c;
     c.clearRect(0, 0, this.w, this.h);
     this.transition.begin(c, this.w, this.h);
@@ -752,11 +750,10 @@ export class PetScene implements Scene {
     const bounce = this.state === "jumping"
       ? Math.sin((safeFrameIndex / jumpDenominator) * Math.PI) * 18
       : 0;
-    const breathe = this.state === "idle" ? Math.sin(this.t * 3) * 2 : 0;
     const drawW = BASE_FRAME_WIDTH * baseScale;
     const drawH = BASE_FRAME_HEIGHT * baseScale;
     const x = (anchorX ?? this.petAnchorX) - drawW / 2;
-    const y = this.h - drawH - 14 - bounce + breathe;
+    const y = this.h - drawH - 14 - bounce;
     return { sx, sy, sourceW: frame.width, sourceH: frame.height, x, y, drawW, drawH, bounce };
   }
 
