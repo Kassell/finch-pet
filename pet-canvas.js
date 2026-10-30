@@ -1757,6 +1757,8 @@ ${this.strings.gameRestartHint}`
     pendingFrameMs = 0;
     image;
     loaded = false;
+    firstFrameReported = false;
+    diagnosticStartedAt = performance.now();
     error = "";
     frameCounts = Array.from({ length: ROWS }, () => COLUMNS);
     visibleContentBoundsByRow = Array.from(
@@ -1851,6 +1853,7 @@ ${this.strings.gameRestartHint}`
       this.scale = pet.finch && typeof pet.finch.scale === "number" ? pet.finch.scale : 0.72;
       this.setState(data.defaultState || "idle");
       if (data.message) this.say(data.message, 1800);
+      this.reportDiagnostic("canvas-init");
       this.image = new Image();
       this.image.onload = () => {
         if (!this.image) return;
@@ -1858,12 +1861,42 @@ ${this.strings.gameRestartHint}`
         this.visibleContentBoundsByRow = detectVisibleContentBoundsByRow(this.image, this.frameCounts);
         this.loaded = true;
         this.error = "";
+        this.reportDiagnostic("sprite-loaded", {
+          imageWidth: this.image.naturalWidth,
+          imageHeight: this.image.naturalHeight
+        });
         this.validateRestingPosition();
       };
       this.image.onerror = () => {
         this.error = this.strings.spriteLoadFailed;
+        this.reportDiagnostic("sprite-error");
       };
       this.image.src = data.spriteDataUrl || "";
+    }
+    reportDiagnostic(stage, extra = {}) {
+      try {
+        this.postToHost({
+          type: "petDiagnostic",
+          stage,
+          metrics: {
+            elapsedMs: Math.round(performance.now() - this.diagnosticStartedAt),
+            x: window.screenX,
+            y: window.screenY,
+            width: this.w,
+            height: this.h,
+            pixelWidth: this.canvas.width,
+            pixelHeight: this.canvas.height,
+            dpr: window.devicePixelRatio || 1,
+            hidden: document.hidden ? 1 : 0,
+            screenWidth: window.screen.width,
+            screenHeight: window.screen.height,
+            displayCount: this.displays.length,
+            scale: this.scale,
+            ...extra
+          }
+        });
+      } catch {
+      }
     }
     enter() {
       this.setPointerPassthrough(this.clickThrough);
@@ -2259,7 +2292,20 @@ ${this.strings.gameRestartHint}`
       }
       const drawSpec = STATES[this.state] || STATES.idle;
       const drawInfo = this.currentPetDrawInfo(drawSpec.row, this.frameCountForRow(drawSpec.row));
-      if (this.image) drawPetFrame(c, { image: this.image, ...drawInfo });
+      if (this.image) {
+        drawPetFrame(c, { image: this.image, ...drawInfo });
+        if (!this.firstFrameReported) {
+          this.firstFrameReported = true;
+          this.reportDiagnostic("first-frame", {
+            drawX: drawInfo.x,
+            drawY: drawInfo.y,
+            drawWidth: drawInfo.drawW,
+            drawHeight: drawInfo.drawH,
+            sourceWidth: drawInfo.sourceW,
+            sourceHeight: drawInfo.sourceH
+          });
+        }
+      }
       this.drawBubble(drawInfo);
       c.restore();
     }

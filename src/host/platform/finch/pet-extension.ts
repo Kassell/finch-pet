@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { release } from 'node:os';
 import type * as finch from 'finch';
 import { isCanvasToHostMessage, PET_STATES, parsePetState, type CanvasStrings, type HostToCanvasMessage } from '../../../shared/protocol.js';
 import {
@@ -33,6 +34,7 @@ import { createPetManagementIpcServer, type PetManagementHandlers, type PetManag
 import { fetchPetdexCatalog, fetchPetdexPreview, type PetdexCatalogItem } from '../../infrastructure/petdex-catalog.js';
 import { PetVisibilityController } from '../../application/visibility-controller.js';
 import { CanvasWindowCoordinator } from '../../application/window-coordinator.js';
+import { createPetSettingsMenu } from './settings-menu.js';
 
 interface McpClientCapability {
   registerServer(input: {
@@ -65,6 +67,20 @@ function isVersionAtLeast(version: string, minimum: readonly [number, number, nu
 }
 
 export function registerPetExtension(ctx: finch.MiniToolContext) {
+  // 数值状态与阶段日志便于远程排查；不输出 initialData、精灵数据或聊天内容。
+  const diagnostic = (stage: string, details: Record<string, unknown> = {}, warning = false) => {
+    const text = `[pet-display] ${stage} ${JSON.stringify(details)}`;
+    if (warning) ctx.logger.warn(text);
+    else ctx.logger.info(text);
+  };
+  const diagnosticCleanups = new Set<() => void>();
+  ctx.subscriptions.push({ dispose: () => {
+    for (const cleanup of diagnosticCleanups) cleanup();
+    diagnosticCleanups.clear();
+  } });
+  diagnostic('activate', { platform: process.platform, osRelease: release(), arch: process.arch, petVersion: ctx.minitool.version });
+  void ctx.app.getInfo().then((info) => diagnostic('app-info', { version: info.version }))
+    .catch(() => diagnostic('app-info-unavailable', {}, true));
   const canvasStrings = (): CanvasStrings => ({
     menuPlayGame: ctx.i18n.t('canvas.menu.playGame'),
     menuWave: ctx.i18n.t('canvas.menu.wave'),
@@ -248,6 +264,8 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
   };
 
   const createWindow = async () => {
+    const startedAt = Date.now();
+    diagnostic('create-start');
     const saved = await ctx.storage.get<WindowPosition>('window.position');
     const savedCanvasWidth = await ctx.storage.get<number>('window.canvasWidth');
     const previousCanvasWidth = typeof savedCanvasWidth === 'number' ? savedCanvasWidth : legacyCanvasWidth;
@@ -266,6 +284,12 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       : undefined;
     if (!visibility.snapshot.desired) throw new Error('pet window opening was cancelled');
 
+    diagnostic('create-options', {
+      savedX: saved?.x, savedY: saved?.y, savedCanvasWidth,
+      x: migratedX, y: migratedY, width: canvasWidth, height: expandedCanvasHeight,
+      transparent: true, clickThrough: true, allowOffscreen: true, enableDesktopSpaces,
+      spriteDataLength: spriteDataUrl.length, petKind: kind,
+    });
     const createdWindow = ctx.ui.createCanvasWindow({
       entry: 'pet-canvas.js',
       width: canvasWidth,
@@ -296,9 +320,34 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
         layout: { expandedHeight: expandedCanvasHeight, petCenterX: rightAlignedPetCenterX },
       },
     });
+    diagnostic('window-created', { windowId: createdWindow.id, state: createdWindow.state });
+    let lastCanvasStage = 'none';
+    let firstFrameReceived = false;
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
+    let frameTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearDiagnosticTimers = () => {
+      clearTimeout(readyTimer);
+      clearTimeout(frameTimer);
+      diagnosticCleanups.delete(clearDiagnosticTimers);
+    };
+    diagnosticCleanups.add(clearDiagnosticTimers);
+    // 只提示慢/卡住，不改变既有生命周期或强制销毁用户窗口。
+    readyTimer = setTimeout(() => diagnostic('ready-pending', {
+      windowId: createdWindow.id, elapsedMs: Date.now() - startedAt,
+      state: createdWindow.state, lastCanvasStage,
+    }, true), 10_000);
     createdWindow.onDidReceiveMessage((msg) => {
       if (!isCanvasToHostMessage(msg)) return;
       const event = msg;
+      if (event.type === 'petDiagnostic') {
+        lastCanvasStage = event.stage;
+        if (event.stage === 'first-frame') {
+          firstFrameReceived = true;
+          clearTimeout(frameTimer);
+        }
+        diagnostic(event.stage, { windowId: createdWindow.id, ...event.metrics }, event.stage === 'sprite-error');
+        return;
+      }
       if ((event?.type === 'bubbleAction' || event?.type === 'openBubbleSession') && event.sessionId) {
         runtime.dismissSessionBubble(event.sessionId);
       }
@@ -335,6 +384,8 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       schedulePositionSave();
     });
     createdWindow.onDidDispose(() => {
+      clearDiagnosticTimers();
+      diagnostic('window-disposed', { windowId: createdWindow.id, lastCanvasStage, firstFrameReceived });
       // close/reopen 期间旧窗口的 dispose 事件可能晚到，只允许当前窗口改状态。
       if (!windows.release(createdWindow)) return;
       clearPositionSaveTimer();
@@ -354,7 +405,17 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     // 避免首条气泡/动画消息在初始化期间丢失。
     try {
       await createdWindow.ready;
+      clearTimeout(readyTimer);
+      diagnostic('window-ready', { windowId: createdWindow.id, elapsedMs: Date.now() - startedAt });
+      if (!firstFrameReceived) {
+        frameTimer = setTimeout(() => diagnostic('first-frame-pending', {
+          windowId: createdWindow.id, state: createdWindow.state,
+          elapsedMs: Date.now() - startedAt, lastCanvasStage,
+        }, true), 15_000);
+      }
     } catch (error) {
+      clearDiagnosticTimers();
+      diagnostic('ready-failed', { windowId: createdWindow.id, error: conciseError(error) }, true);
       createdWindow.dispose();
       throw error;
     }
@@ -368,11 +429,13 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     if (!visibility.snapshot.desired) throw new Error('pet window opening was cancelled');
     if (windows.current) {
       windows.current.show();
+      diagnostic('show-existing', { windowId: windows.current.id, state: windows.current.state, visible: windows.current.visible });
       notifyControlState();
       return windows.current;
     }
     const created = await windows.ensure(createWindow);
     created.show();
+    diagnostic('show-issued', { windowId: created.id, state: created.state, visible: created.visible });
     notifyControlState();
     return created;
   };
@@ -480,6 +543,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
 
   const reopenIfVisible = async () => { if (windows.current) { close(); await open(); } };
   const showPet = async () => {
+    diagnostic('show-request', { ...visibility.snapshot, hasWindow: !!windows.current });
     const persistence = visibility.set(true);
     const requestedRevision = visibility.snapshot.revision;
     try {
@@ -487,6 +551,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
       await persistence;
       return win;
     } catch (err) {
+      diagnostic('show-failed', { error: conciseError(err), revision: requestedRevision }, true);
       // 仅回滚本次显示请求，不能覆盖期间发生的更新操作。
       if (visibility.isCurrent(requestedRevision)) {
         await visibility.set(false);
@@ -496,6 +561,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
     }
   };
   const hidePet = async () => {
+    diagnostic('hide-request', { hasWindow: !!windows.current });
     const persistence = visibility.set(false);
     close();
     await persistence;
@@ -671,6 +737,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
         const installed = await importers.importPetSource(selected.pageUrl);
         state.installedPetNames.add(selected.slug);
         state.removablePetNames.add(selected.slug);
+        diagnostic('catalog-install-complete', { duplicate: installed.duplicate === true });
         await visibility.set(true);
         await open();
         notifyControlState();
@@ -682,6 +749,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
           ctx.logger.warn('show installed pet toast failed', conciseError(error));
         });
       } catch (error) {
+        diagnostic('catalog-install-or-show-failed', { error: conciseError(error) }, true);
         void ctx.ui.showToast({
           title: ctx.i18n.t('petCatalog.installFailed'),
           description: conciseError(error),
@@ -929,6 +997,7 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
         if (err instanceof DuplicatePetIdError) return { isError: true, content: [{ type: 'text', text: library.duplicatePetMessage(err.id, err.folders) }] };
         throw err;
       }
+      diagnostic('tool-install-complete', { duplicate: imported.duplicate === true, desired: visibility.snapshot.desired, hasWindow: !!windows.current });
       const text = imported.duplicate === true
         ? `selected existing: ${imported.name} (${imported.displayName})`
         : `added: ${imported.name} (${imported.displayName})`;
@@ -1173,40 +1242,17 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
   settingsMenu = ctx.settingsMenu.register({
     async getMenu() {
       const [, petAvailable] = await Promise.all([runtimeFeedbackReady, hasUsablePet()]);
-      return [
-        {
-          id: 'runtime-feedback',
-          label: ctx.i18n.t('settingsMenu.runtimeFeedback'),
-          iconName: 'sliders-horizontal',
-          children: [
-            {
-              id: 'runtime:thinking',
-              label: ctx.i18n.t('settingsMenu.showProgress'),
-              current: runtimeFeedback.showThinking,
-            },
-            {
-              id: 'runtime:result',
-              label: ctx.i18n.t('settingsMenu.notifyResult'),
-              current: runtimeFeedback.notifyResult,
-            },
-            {
-              id: 'runtime:waiting',
-              label: ctx.i18n.t('settingsMenu.notifyWaiting'),
-              current: runtimeFeedback.notifyWaiting,
-            },
-          ],
-        },
-        { id: 'separator:visibility', label: '', separator: true },
-        {
-          id: visibility.snapshot.desired ? 'visibility:hide' : 'visibility:show',
-          label: ctx.i18n.t(`composerActions.pet-toggle.${visibility.snapshot.desired ? 'hidePet' : 'showPet'}`),
-          iconName: visibility.snapshot.desired ? 'ext:finch-pet/eye-off' : 'ext:finch-pet/eye',
-          disabled: !petAvailable,
-        },
-      ];
+      return createPetSettingsMenu({
+        petAvailable,
+        visible: visibility.snapshot.desired,
+        t: (key) => ctx.i18n.t(key),
+        runtimeFeedbackItem: runtimeFeedbackMenuItem(),
+      });
     },
     async execute(_context, itemId) {
-      if (itemId === 'visibility:show') {
+      if (itemId === 'install:catalog') {
+        await installPetFromCatalog();
+      } else if (itemId === 'visibility:show') {
         await showPet();
       } else if (itemId === 'visibility:hide') {
         await hidePet();
@@ -1298,9 +1344,11 @@ export function registerPetExtension(ctx: finch.MiniToolContext) {
   void (async () => {
     const petReady = await hasUsablePet();
     const visible = await visibility.restore(petReady);
+    diagnostic('visibility-restored', { petReady, desired: visible });
     if (visible) await open();
   })().catch((err) => {
     void visibility.set(false);
+    diagnostic('initialize-failed', { error: conciseError(err) }, true);
     ctx.logger.warn('initialize pet failed', err instanceof Error ? err.message : String(err));
   });
 }

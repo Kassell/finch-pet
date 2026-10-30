@@ -135,6 +135,8 @@ export class PetScene implements Scene {
 
   private image: HTMLImageElement | undefined;
   private loaded = false;
+  private firstFrameReported = false;
+  private readonly diagnosticStartedAt = performance.now();
   private error = "";
   private frameCounts: number[] = Array.from({ length: ROWS }, () => COLUMNS);
   private visibleContentBoundsByRow: VisibleBounds[] = Array.from(
@@ -241,6 +243,7 @@ export class PetScene implements Scene {
     this.setState(data.defaultState || "idle");
     if (data.message) this.say(data.message, 1800);
 
+    this.reportDiagnostic('canvas-init');
     this.image = new Image();
     this.image.onload = () => {
       if (!this.image) return;
@@ -248,12 +251,38 @@ export class PetScene implements Scene {
       this.visibleContentBoundsByRow = detectVisibleContentBoundsByRow(this.image, this.frameCounts);
       this.loaded = true;
       this.error = "";
+      this.reportDiagnostic('sprite-loaded', {
+        imageWidth: this.image.naturalWidth,
+        imageHeight: this.image.naturalHeight,
+      });
       this.validateRestingPosition();
     };
     this.image.onerror = () => {
       this.error = this.strings.spriteLoadFailed;
+      this.reportDiagnostic('sprite-error');
     };
     this.image.src = data.spriteDataUrl || "";
+  }
+
+  private reportDiagnostic(stage: 'canvas-init' | 'sprite-loaded' | 'sprite-error' | 'first-frame', extra: Record<string, number> = {}): void {
+    // 只上报数值几何信息，不携带图片、气泡或会话内容。诊断失败不能影响绘制。
+    try {
+      this.postToHost({
+        type: 'petDiagnostic', stage,
+        metrics: {
+          elapsedMs: Math.round(performance.now() - this.diagnosticStartedAt),
+          x: window.screenX, y: window.screenY,
+          width: this.w, height: this.h,
+          pixelWidth: this.canvas.width, pixelHeight: this.canvas.height,
+          dpr: window.devicePixelRatio || 1,
+          hidden: document.hidden ? 1 : 0,
+          screenWidth: window.screen.width, screenHeight: window.screen.height,
+          displayCount: this.displays.length,
+          scale: this.scale,
+          ...extra,
+        },
+      });
+    } catch { /* best-effort diagnostic */ }
   }
 
   enter(): void { this.setPointerPassthrough(this.clickThrough); }
@@ -724,7 +753,17 @@ export class PetScene implements Scene {
 
     const drawSpec = STATES[this.state] || STATES.idle;
     const drawInfo = this.currentPetDrawInfo(drawSpec.row, this.frameCountForRow(drawSpec.row));
-    if (this.image) drawPetFrame(c, { image: this.image, ...drawInfo });
+    if (this.image) {
+      drawPetFrame(c, { image: this.image, ...drawInfo });
+      if (!this.firstFrameReported) {
+        this.firstFrameReported = true;
+        this.reportDiagnostic('first-frame', {
+          drawX: drawInfo.x, drawY: drawInfo.y,
+          drawWidth: drawInfo.drawW, drawHeight: drawInfo.drawH,
+          sourceWidth: drawInfo.sourceW, sourceHeight: drawInfo.sourceH,
+        });
+      }
+    }
     this.drawBubble(drawInfo);
     c.restore();
   }

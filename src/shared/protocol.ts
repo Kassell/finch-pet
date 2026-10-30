@@ -88,8 +88,12 @@ export type HostToCanvasMessage =
       durationMs: number;
     };
 
+export const PET_DIAGNOSTIC_STAGES = ['canvas-init', 'sprite-loaded', 'sprite-error', 'first-frame'] as const;
+export type PetDiagnosticStage = typeof PET_DIAGNOSTIC_STAGES[number];
+
 /** Canvas → Host。 */
 export type CanvasToHostMessage =
+  | { type: 'petDiagnostic'; stage: PetDiagnosticStage; metrics: Record<string, number> }
   | { type: 'poke'; state: PetState }
   | { type: 'hitTest'; clickThrough: boolean }
   | { type: 'bubbleAction'; action: BubbleAction['id']; sessionId: string }
@@ -193,6 +197,13 @@ export function isHostToCanvasMessage(value: unknown): value is HostToCanvasMess
 export function isCanvasToHostMessage(value: unknown): value is CanvasToHostMessage {
   if (!isRecord(value)) return false;
   switch (value.type) {
+    case 'petDiagnostic':
+      return PET_DIAGNOSTIC_STAGES.includes(value.stage as PetDiagnosticStage)
+        && isRecord(value.metrics)
+        && Object.keys(value.metrics).length <= 80
+        && Object.entries(value.metrics).every(([key, metric]) =>
+          /^[a-zA-Z][a-zA-Z0-9_]{0,39}$/.test(key)
+          && typeof metric === 'number' && Number.isFinite(metric));
     case 'poke':
       return isPetState(value.state);
     case 'hitTest':
